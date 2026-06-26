@@ -390,7 +390,7 @@ async def buy_pixel(pixel_id: str, user: dict = Depends(get_current_user)):
     if user.get("coins", 0) < price:
         raise HTTPException(status_code=402, detail="Not enough Pixel Coins")
     now = now_utc()
-    await db.pixels.update_one(
+    result = await db.pixels.update_one(
         {"pixel_id": pixel_id, "owner_id": None},
         {
             "$set": {
@@ -400,6 +400,9 @@ async def buy_pixel(pixel_id: str, user: dict = Depends(get_current_user)):
             }
         },
     )
+    if result.matched_count == 0:
+        # Lost the race - someone else just bought it
+        raise HTTPException(status_code=409, detail="Pixel already owned")
     await db.users.update_one(
         {"user_id": user["user_id"]},
         {"$inc": {"coins": -price, "pixels_owned": 1}},
