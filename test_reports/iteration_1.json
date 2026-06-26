@@ -1,0 +1,36 @@
+{
+  "summary": "Backend-only testing of PixelLand MVP. Ran 21 pytest tests against the public backend URL (https://pixelland-mvp.preview.emergentagent.com/api). All 21 tests passed. Coverage includes auth (admin-login success + 2 invalid-credential cases, /auth/me with/without/invalid bearer, /auth/logout invalidation), pixels (list 400 with x in 0..19, y in 0..19, prices subset of [5,10,20,30,40,50,100], single GET, 404), buy flow (coins & pixels_owned correctly decremented/incremented, persistence verified via GET), 409 on already-owned, owner PATCH name/description/cover, /profile/pixels listing admin-owned, and admin endpoints (RBAC 401 when missing bearer, users list excludes password_hash, PATCH user updates coins/name, PATCH pixel for price/name/description, owner assignment + clearing with pixels_owned counter adjustment, 404 for unknown user/pixel).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/auth/admin-login", "issue": "Admin password is hardcoded in server.py and re-synced on every startup via seed_admin; functional but reduces auditability. Not a bug, just a note."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_pixelland_api.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py at 507 lines is fine but starting to consolidate auth/pixels/admin in one file - consider splitting if it grows further.",
+    "Buy flow uses two separate updates (pixel + user) without a transaction; race-condition-safe only because of the {owner_id: None} filter on the pixel update, but the user $inc still happens even if the pixel update matched 0 docs in an unlikely race. Consider checking the update result before debiting coins.",
+    "admin clear-owner path: in admin_update_pixel, when owner_id == '' is passed but pixel currently has no owner, no-op is fine - verified."
+  ],
+  "updated_files": [
+    "/app/backend/tests/conftest.py (new)",
+    "/app/backend/tests/test_pixelland_api.py (new)"
+  ],
+  "success_rate": {"backend": "100% (21/21)", "frontend": "not tested"},
+  "seed_data_creation": "Tests reuse seeded admin user and 400 seeded pixels. Each run buys 1 pixel as admin then clears via admin endpoint; admin coins restored to 99999 at end. Pixel names with TEST_ prefix may remain on the pixel that was bought-then-released (cosmetic).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Public base URL: EXPO_PUBLIC_BACKEND_URL=https://pixelland-mvp.preview.emergentagent.com. Admin login: admin@pixelland.com / 'Apollo2122@×+>×>adm00140' (note unicode chars). Admin is seeded with 99999 coins on startup but password hash is re-synced every restart. Run tests with: cd /app && python -m pytest backend/tests/test_pixelland_api.py -v.",
+  "rca_of_issue": "N/A - no bugs found."
+}
