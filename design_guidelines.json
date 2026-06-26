@@ -1,0 +1,163 @@
+{
+  "app_name": "PixelLand",
+  "personality": "7. Dark-First Utility DARK",
+  "personality_one_liner": "A sharp, command-center interface that feels like a live operational surface for digital real estate, prioritizing glanceability and grid interaction.",
+  "color": {
+    "surface": "#0F1115",
+    "onSurface": "#F8FAFC",
+    "surfaceSecondary": "#1C1F26",
+    "onSurfaceSecondary": "#94A3B8",
+    "surfaceTertiary": "#2A2D35",
+    "onSurfaceTertiary": "#64748B",
+    "surfaceInverse": "#FFFFFF",
+    "onSurfaceInverse": "#0F1115",
+    "brand": "#00E5FF",
+    "brandPrimary": "#00E5FF",
+    "onBrandPrimary": "#0F1115",
+    "brandSecondary": "#00B8D4",
+    "onBrandSecondary": "#F8FAFC",
+    "brandTertiary": "#00333D",
+    "onBrandTertiary": "#00E5FF",
+    "success": "#10B981",
+    "onSuccess": "#064E3B",
+    "warning": "#F59E0B",
+    "onWarning": "#78350F",
+    "error": "#EF4444",
+    "onError": "#7F1D1D",
+    "info": "#3B82F6",
+    "onInfo": "#EFF6FF",
+    "border": "#2A2D35",
+    "borderStrong": "#475569",
+    "divider": "#1C1F26"
+  },
+  "typography": {
+    "displayFontFamily": "Rajdhani",
+    "textFontFamily": "IBM Plex Sans",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Use tight padding for data rows and generous padding (md/lg) for distinct modular cards. Components like map overlays should float over the safe area with strict md margins.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 4,
+    "md": 8,
+    "lg": 16,
+    "pill": 999
+  },
+  "shadow_tier": "0",
+  "navigation": "stack_only",
+  "icon_set": "Phosphor",
+  "glassmorphism": {
+    "enabled": "true",
+    "do's": [
+      "Use heavy glass effect for the floating HUDs (Coin balance, User Profile pill) resting over the grid map.",
+      "Use frosted glass on the bottom sheet handle/header when dragging."
+    ],
+    "dont's": [
+      "Do not blur individual pixel blocks.",
+      "Do not use glass behind dense form fields or data tables in the admin panel."
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Login",
+      "purpose": "Frictionless entry via Google Login into the PixelLand ecosystem.",
+      "states": {
+        "loading": "Centered brandPrimary spinner.",
+        "empty": "N/A",
+        "error": "Error toast indicating login failure with a retry CTA."
+      },
+      "layout": "Minimalist centered layout. Dark background with a subtle ambient radial gradient of brandTertiary. Large display title 'PixelLand' using Rajdhani. Single prominent Google Login button styled as a surfaceSecondary pill with borderStrong outline."
+    },
+    {
+      "name": "Map",
+      "purpose": "The core experience: an interactive, zoomable, and pannable 20x20 grid representing digital real estate.",
+      "states": {
+        "loading": "Skeleton grid showing placeholder blocks pulsing.",
+        "empty": "N/A",
+        "error": "Full-screen dark error state asking to reload the map data."
+      },
+      "layout": "Edge-to-edge interactive grid map using gesture-handler. Overlay: Top-left pill with user avatar and pixel count; Top-right pill showing Pixel Coins wallet balance (using glassmorphism). Bottom: Non-modal bottom sheet that slides up when a pixel is tapped. The map remains interactive while the sheet is visible."
+    },
+    {
+      "name": "PixelDetails",
+      "purpose": "Displayed via the bottom sheet: shows owner info, pixel coordinates, description, and purchase actions.",
+      "states": {
+        "loading": "Skeleton layout for title and owner info.",
+        "empty": "N/A",
+        "error": "Text reading 'Could not fetch pixel data' with retry."
+      },
+      "layout": "Rendered inside @gorhom/bottom-sheet. Top half: Cover photo (with bottom-fade scrim) or abstract digital banner. Bottom half: High-contrast data rows (Owner, Coords, Price). If available: Sticky primary CTA 'Buy Pixel' fixed to the bottom of the sheet with safe-area padding."
+    },
+    {
+      "name": "Profile",
+      "purpose": "Shows the user's acquired pixels, total coin balance, and basic Google account info.",
+      "states": {
+        "loading": "Spinner in the center.",
+        "empty": "Illustration/Icon indicating 'No pixels owned yet'.",
+        "error": "Could not load profile data."
+      },
+      "layout": "Header: Large avatar with display name and Coin balance in an elevated surfaceSecondary card. Body: Grid or list of owned Pixels with thumbnail cover images and coordinates."
+    },
+    {
+      "name": "Admin",
+      "purpose": "Management panel to edit users, alter pixel info, or mint new pixels.",
+      "states": {
+        "loading": "Spinner.",
+        "empty": "No data available.",
+        "error": "Admin access denied error."
+      },
+      "layout": "Dense, utility-first list view. Segmented control at the top to toggle between 'Users' and 'Pixels'. High information density with subtle dividers. No glassmorphism here, pure tactical UI."
+    }
+  ],
+  "images": {
+    "pixel_cover_default": {
+      "url": "https://images.unsplash.com/photo-1713981272299-355d7038d708?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMzV8MHwxfHNlYXJjaHw0fHxhYnN0cmFjdCUyMGRpZ2l0YWwlMjBwaXhlbCUyMGFydCUyMGRhcmt8ZW58MHx8fHwxNzgyNDMyMDE4fDA&ixlib=rb-4.1.0&q=85",
+      "alt": "Abstract aerial night city serving as default pixel territory cover"
+    },
+    "user_avatar_placeholder": {
+      "url": "https://images.pexels.com/photos/9067815/pexels-photo-9067815.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "alt": "Default user avatar with dark neon aesthetic"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Design Identity: Strictly adhere to '7. Dark-First Utility DARK' using the provided palette. Do NOT introduce other shades of blue or purple. The accent is electric cyan (#00E5FF).",
+    "Map Interaction: The core mechanic is the 20x20 grid map. Implement panning and zooming using react-native-gesture-handler and react-native-reanimated. Ensure smooth 60fps performance by avoiding re-renders of the entire 400-pixel grid on every gesture.",
+    "Bottom Sheet Pattern: The 'PixelDetails' view must be implemented as a non-modal bottom sheet using @gorhom/bottom-sheet. When a user taps a pixel, slide up the sheet but leave the background map fully visible and interactive. Do not block the map with a dark modal scrim.",
+    "HUD Elements: The user's profile summary (Avatar + Pixel count) and their Pixel Coins wallet should float over the map as sticky HUD pills using glassmorphism (expo-blur) or solid surfaceTertiary backgrounds.",
+    "Typography: Use Rajdhani for all numbers, metrics, coordinates, and display titles. Use IBM Plex Sans for standard body text.",
+    "Images & Textures: Apply the mandatory linear-gradient scrim (top-to-bottom fade) over the pixel_cover_default image when displaying text on top of it in the bottom sheet or profile."
+  ],
+  "haptics": {
+    "map_pixel_tap": "light",
+    "bottom_sheet_snap": "medium",
+    "buy_pixel_success": "success",
+    "buy_pixel_error": "error",
+    "tab_switch": "light"
+  }
+}
