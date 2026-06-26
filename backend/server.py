@@ -93,12 +93,19 @@ class PixelOut(BaseModel):
     owner_id: Optional[str] = None
     owner_name: Optional[str] = None
     purchased_at: Optional[str] = None
+    gallery: List[str] = Field(default_factory=list)
+    external_link: Optional[str] = ""
+    theme_color: Optional[str] = "#00E5FF"
+    listed_price: Optional[int] = None
 
 
 class PixelUpdateIn(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     cover_image: Optional[str] = None
+    gallery: Optional[List[str]] = None
+    external_link: Optional[str] = None
+    theme_color: Optional[str] = None
 
 
 class AdminPixelUpdateIn(BaseModel):
@@ -107,6 +114,33 @@ class AdminPixelUpdateIn(BaseModel):
     cover_image: Optional[str] = None
     price: Optional[int] = None
     owner_id: Optional[str] = None  # set to "" to clear ownership
+
+
+class ListPixelIn(BaseModel):
+    price: int
+
+
+class TransactionOut(BaseModel):
+    tx_id: str
+    pixel_id: str
+    kind: str  # "primary" | "resale"
+    seller_id: Optional[str] = None
+    seller_name: Optional[str] = None
+    buyer_id: str
+    buyer_name: str
+    price: int
+    fee: int
+    seller_proceeds: int
+    timestamp: str
+
+
+class LeaderboardEntry(BaseModel):
+    user_id: str
+    name: str
+    picture: Optional[str] = None
+    pixels_owned: int
+    total_spent: int
+    is_admin: bool
 
 
 class AdminUserUpdateIn(BaseModel):
@@ -155,6 +189,10 @@ def _pixel_to_out(p: dict) -> PixelOut:
         owner_id=p.get("owner_id"),
         owner_name=p.get("owner_name"),
         purchased_at=purchased_at,
+        gallery=list(p.get("gallery") or []),
+        external_link=p.get("external_link") or "",
+        theme_color=p.get("theme_color") or "#00E5FF",
+        listed_price=p.get("listed_price"),
     )
 
 
@@ -244,6 +282,9 @@ async def ensure_indexes():
     await db.user_sessions.create_index("user_id")
     await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
     await db.pixels.create_index("pixel_id", unique=True)
+    await db.transactions.create_index("pixel_id")
+    await db.transactions.create_index("buyer_id")
+    await db.transactions.create_index("timestamp")
 
 
 # ---------------- App / Router ----------------
@@ -407,8 +448,205 @@ async def buy_pixel(pixel_id: str, user: dict = Depends(get_current_user)):
         {"user_id": user["user_id"]},
         {"$inc": {"coins": -price, "pixels_owned": 1}},
     )
+    await _record_transaction(
+        pixel_id=pixel_id,
+        kind="primary",
+        seller_id=None,
+        seller_name=None,
+        buyer_id=user["user_id"],
+        buyer_name=user.get("name") or user["email"],
+        price=price,
+        fee=0,
+        seller_proceeds=0,
+        ts=now,
+    )
     updated = await db.pixels.find_one({"pixel_id": pixel_id}, {"_id": 0})
     return _pixel_to_out(updated)
+
+
+# -------- Marketplace (secondary) --------
+
+MARKET_FEE_PCT = 10  # 10% goes to the house
+
+
+async def _record_transaction(
+    *,
+    pixel_id: str,
+    kind: str,
+    seller_id: Optional[str],
+    seller_name: Optional[str],
+    buyer_id: str,
+    buyer_name: str,
+    price: int,
+    fee: int,
+    seller_proceeds: int,
+    ts: datetime,
+):
+    await db.transactions.insert_one({
+        "tx_id": f"tx_{uuid.uuid4().hex[:14]}",
+        "pixel_id": pixel_id,
+        "kind": kind,
+        "seller_id": seller_id,
+        "seller_name": seller_name,
+        "buyer_id": buyer_id,
+        "buyer_name": buyer_name,
+        "price": price,
+        "fee": fee,
+        "seller_proceeds": seller_proceeds,
+        "timestamp": ts,
+    })
+
+
+def _tx_to_out(t: dict) -> TransactionOut:
+    ts = t.get("timestamp")
+    if isinstance(ts, datetime):
+        ts = _to_aware(ts).isoformat()
+    return TransactionOut(
+        tx_id=t["tx_id"],
+        pixel_id=t["pixel_id"],
+        kind=t["kind"],
+        seller_id=t.get("seller_id"),
+        seller_name=t.get("seller_name"),
+        buyer_id=t["buyer_id"],
+        buyer_name=t["buyer_name"],
+        price=int(t["price"]),
+        fee=int(t.get("fee") or 0),
+        seller_proceeds=int(t.get("seller_proceeds") or 0),
+        timestamp=ts or "",
+    )
+
+
+@api.post("/pixels/{pixel_id}/list", response_model=PixelOut)
+async def list_for_sale(pixel_id: str, payload: ListPixelIn, user: dict = Depends(get_current_user)):
+    if payload.price <= 0:
+        raise HTTPException(status_code=400, detail="Price must be > 0")
+    p = await db.pixels.find_one({"pixel_id": pixel_id}, {"_id": 0})
+    if not p:
+        raise HTTPException(status_code=404, detail="Pixel not found")
+    if p.get("owner_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Not your pixel")
+    await db.pixels.update_one(
+        {"pixel_id": pixel_id},
+        {"$set": {"listed_price": int(payload.price)}},
+    )
+    updated = await db.pixels.find_one({"pixel_id": pixel_id}, {"_id": 0})
+    return _pixel_to_out(updated)
+
+
+@api.delete("/pixels/{pixel_id}/list", response_model=PixelOut)
+async def unlist(pixel_id: str, user: dict = Depends(get_current_user)):
+    p = await db.pixels.find_one({"pixel_id": pixel_id}, {"_id": 0})
+    if not p:
+        raise HTTPException(status_code=404, detail="Pixel not found")
+    if p.get("owner_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Not your pixel")
+    await db.pixels.update_one(
+        {"pixel_id": pixel_id},
+        {"$set": {"listed_price": None}},
+    )
+    updated = await db.pixels.find_one({"pixel_id": pixel_id}, {"_id": 0})
+    return _pixel_to_out(updated)
+
+
+@api.post("/pixels/{pixel_id}/buy-resale", response_model=PixelOut)
+async def buy_resale(pixel_id: str, user: dict = Depends(get_current_user)):
+    p = await db.pixels.find_one({"pixel_id": pixel_id}, {"_id": 0})
+    if not p:
+        raise HTTPException(status_code=404, detail="Pixel not found")
+    listed_price = p.get("listed_price")
+    if not listed_price or listed_price <= 0:
+        raise HTTPException(status_code=409, detail="Pixel not listed")
+    seller_id = p.get("owner_id")
+    if not seller_id:
+        raise HTTPException(status_code=409, detail="Pixel has no owner")
+    if seller_id == user["user_id"]:
+        raise HTTPException(status_code=409, detail="Cannot buy your own pixel")
+    price = int(listed_price)
+    if user.get("coins", 0) < price:
+        raise HTTPException(status_code=402, detail="Not enough Pixel Coins")
+    fee = (price * MARKET_FEE_PCT) // 100
+    seller_proceeds = price - fee
+    now = now_utc()
+    # Conditional swap: only if listed_price and owner are still the same
+    result = await db.pixels.update_one(
+        {"pixel_id": pixel_id, "owner_id": seller_id, "listed_price": listed_price},
+        {
+            "$set": {
+                "owner_id": user["user_id"],
+                "owner_name": user.get("name") or user["email"],
+                "purchased_at": now,
+                "listed_price": None,
+            }
+        },
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=409, detail="Listing changed, please retry")
+    # Update balances
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$inc": {"coins": -price, "pixels_owned": 1}},
+    )
+    await db.users.update_one(
+        {"user_id": seller_id},
+        {"$inc": {"coins": seller_proceeds, "pixels_owned": -1}},
+    )
+    seller = await db.users.find_one({"user_id": seller_id}, {"_id": 0, "name": 1, "email": 1})
+    await _record_transaction(
+        pixel_id=pixel_id,
+        kind="resale",
+        seller_id=seller_id,
+        seller_name=(seller or {}).get("name") or (seller or {}).get("email"),
+        buyer_id=user["user_id"],
+        buyer_name=user.get("name") or user["email"],
+        price=price,
+        fee=fee,
+        seller_proceeds=seller_proceeds,
+        ts=now,
+    )
+    updated = await db.pixels.find_one({"pixel_id": pixel_id}, {"_id": 0})
+    return _pixel_to_out(updated)
+
+
+@api.get("/pixels/{pixel_id}/transactions", response_model=List[TransactionOut])
+async def pixel_transactions(pixel_id: str):
+    txs = await db.transactions.find({"pixel_id": pixel_id}, {"_id": 0}).sort([("timestamp", -1)]).to_list(length=200)
+    return [_tx_to_out(t) for t in txs]
+
+
+@api.get("/listings", response_model=List[PixelOut])
+async def listings():
+    items = await db.pixels.find(
+        {"listed_price": {"$ne": None, "$gt": 0}},
+        {"_id": 0},
+    ).sort([("listed_price", 1)]).to_list(length=TOTAL_PIXELS)
+    return [_pixel_to_out(p) for p in items]
+
+
+# -------- Leaderboard --------
+
+
+@api.get("/leaderboard", response_model=List[LeaderboardEntry])
+async def leaderboard():
+    users = await db.users.find({}, {"_id": 0, "password_hash": 0}).to_list(length=1000)
+    # Aggregate total spent from transactions (only as buyer)
+    pipeline = [
+        {"$group": {"_id": "$buyer_id", "spent": {"$sum": "$price"}}},
+    ]
+    agg = {}
+    async for row in db.transactions.aggregate(pipeline):
+        agg[row["_id"]] = int(row.get("spent") or 0)
+    entries = []
+    for u in users:
+        entries.append(LeaderboardEntry(
+            user_id=u["user_id"],
+            name=u.get("name") or u.get("email") or "Pixel Owner",
+            picture=u.get("picture"),
+            pixels_owned=int(u.get("pixels_owned", 0)),
+            total_spent=agg.get(u["user_id"], 0),
+            is_admin=bool(u.get("is_admin", False)),
+        ))
+    entries.sort(key=lambda e: (e.pixels_owned, e.total_spent), reverse=True)
+    return entries[:50]
 
 
 @api.patch("/pixels/{pixel_id}", response_model=PixelOut)

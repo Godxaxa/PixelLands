@@ -17,7 +17,7 @@ import { useAuth } from "@/src/context/AuthContext";
 import { colors, radius, spacing } from "@/src/theme";
 
 export default function ProfileScreen() {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const [mine, setMine] = useState<Pixel[]>([]);
@@ -46,8 +46,12 @@ export default function ProfileScreen() {
           <Ionicons name="chevron-back" size={20} color={colors.onSurface} />
         </Pressable>
         <Text style={styles.headerTitle}>Profile</Text>
-        <Pressable testID="profile-logout" onPress={logout} style={styles.iconBtn}>
-          <Ionicons name="log-out-outline" size={20} color={colors.onSurface} />
+        <Pressable
+          testID="profile-leaderboard-btn"
+          onPress={() => router.push("/leaderboard")}
+          style={styles.iconBtn}
+        >
+          <Ionicons name="trophy" size={18} color={colors.brand} />
         </Pressable>
       </View>
 

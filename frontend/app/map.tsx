@@ -30,12 +30,14 @@ const { width: SCREEN_W } = Dimensions.get("window");
 const BASE_BOARD = Math.min(SCREEN_W, 500) - spacing.xl * 2;
 const CELL = BASE_BOARD / GRID;
 
-type Status = "available" | "owned" | "mine";
+type Status = "available" | "owned" | "mine" | "listed" | "mine-listed";
 
 function statusColor(s: Status) {
+  if (s === "mine-listed") return "#FFD93D";
   if (s === "mine") return colors.brand;
+  if (s === "listed") return "#FF9F1C";
   if (s === "owned") return "#3A3F47";
-  return "#11252C"; // subtle teal for available
+  return "#11252C";
 }
 
 export default function MapScreen() {
@@ -149,12 +151,17 @@ export default function MapScreen() {
   const renderedGrid = useMemo(() => {
     if (pixels.length === 0) return null;
     return pixels.map((p) => {
-      const status: Status =
-        p.owner_id === user?.user_id
-          ? "mine"
-          : p.owner_id
-          ? "owned"
-          : "available";
+      const isMine = p.owner_id === user?.user_id;
+      const isListed = !!p.listed_price;
+      const status: Status = isMine
+        ? isListed
+          ? "mine-listed"
+          : "mine"
+        : p.owner_id
+        ? isListed
+          ? "listed"
+          : "owned"
+        : "available";
       return (
         <Pressable
           key={p.pixel_id}
@@ -172,7 +179,11 @@ export default function MapScreen() {
               top: p.y * CELL,
               backgroundColor: statusColor(status),
               borderColor:
-                status === "mine" ? colors.brand : "#0A0D12",
+                status === "mine" || status === "mine-listed"
+                  ? colors.brand
+                  : status === "listed"
+                  ? "#FF9F1C"
+                  : "#0A0D12",
             },
           ]}
         />
@@ -181,6 +192,7 @@ export default function MapScreen() {
   }, [pixels, user?.user_id, openSelected]);
 
   const available = pixels.filter((p) => !p.owner_id).length;
+  const listed = pixels.filter((p) => !!p.listed_price).length;
   const sold = pixels.length - available;
 
   return (
@@ -243,11 +255,15 @@ export default function MapScreen() {
       <View style={styles.legendRow}>
         <View style={styles.legendChip}>
           <View style={[styles.legendDot, { backgroundColor: "#11252C" }]} />
-          <Text style={styles.legendText}>{available} available</Text>
+          <Text style={styles.legendText}>{available}</Text>
         </View>
         <View style={styles.legendChip}>
           <View style={[styles.legendDot, { backgroundColor: "#3A3F47" }]} />
           <Text style={styles.legendText}>{sold} sold</Text>
+        </View>
+        <View style={styles.legendChip}>
+          <View style={[styles.legendDot, { backgroundColor: "#FF9F1C" }]} />
+          <Text style={styles.legendText}>{listed} for sale</Text>
         </View>
         <View style={styles.legendChip}>
           <View style={[styles.legendDot, { backgroundColor: colors.brand }]} />
@@ -270,6 +286,14 @@ export default function MapScreen() {
 
       {/* Bottom action bar */}
       <View style={[styles.actionBar, { paddingBottom: insets.bottom + spacing.sm }]}>
+        <Pressable
+          testID="leaderboard-link-btn"
+          style={styles.adminBtn}
+          onPress={() => router.push("/leaderboard")}
+        >
+          <Ionicons name="trophy" size={16} color={colors.brand} />
+          <Text style={styles.adminBtnText}>Top</Text>
+        </Pressable>
         {user?.is_admin ? (
           <Pressable
             testID="admin-link-btn"
@@ -279,10 +303,8 @@ export default function MapScreen() {
             <Ionicons name="construct" size={16} color={colors.brand} />
             <Text style={styles.adminBtnText}>Admin</Text>
           </Pressable>
-        ) : (
-          <View style={{ width: 80 }} />
-        )}
-        <Text style={styles.hint}>Tap a pixel · Pinch to zoom · Drag to pan</Text>
+        ) : null}
+        <Text style={styles.hint} numberOfLines={1}>Tap · Pinch · Pan</Text>
         <Pressable testID="logout-btn" style={styles.adminBtn} onPress={logout}>
           <Ionicons name="log-out-outline" size={16} color={colors.onSurfaceSecondary} />
         </Pressable>
@@ -318,10 +340,12 @@ export default function MapScreen() {
                   </Text>
                 </View>
                 <View style={styles.row}>
-                  <Text style={styles.rowLabel}>Price</Text>
+                  <Text style={styles.rowLabel}>
+                    {selected.listed_price ? "Resale" : "Price"}
+                  </Text>
                   <Text style={styles.rowValue}>
-                    <Ionicons name="diamond" size={14} color={colors.brand} />{" "}
-                    {selected.price}
+                    <Ionicons name="diamond" size={14} color={selected.listed_price ? "#FF9F1C" : colors.brand} />{" "}
+                    {selected.listed_price || selected.price}
                   </Text>
                 </View>
                 {selected.purchased_at ? (
@@ -364,7 +388,11 @@ export default function MapScreen() {
                       router.push(`/pixel/${id}`);
                     }}
                   >
-                    <Text style={styles.secondaryBtnText}>View pixel page</Text>
+                    <Text style={styles.secondaryBtnText}>
+                      {selected.listed_price && selected.owner_id !== user?.user_id
+                        ? `Open · Buy for ${selected.listed_price} coins`
+                        : "View pixel page"}
+                    </Text>
                   </Pressable>
                 )}
               </View>

@@ -24,6 +24,33 @@ export type Pixel = {
   owner_id?: string | null;
   owner_name?: string | null;
   purchased_at?: string | null;
+  gallery?: string[];
+  external_link?: string | null;
+  theme_color?: string | null;
+  listed_price?: number | null;
+};
+
+export type Transaction = {
+  tx_id: string;
+  pixel_id: string;
+  kind: "primary" | "resale";
+  seller_id?: string | null;
+  seller_name?: string | null;
+  buyer_id: string;
+  buyer_name: string;
+  price: number;
+  fee: number;
+  seller_proceeds: number;
+  timestamp: string;
+};
+
+export type LeaderboardEntry = {
+  user_id: string;
+  name: string;
+  picture?: string | null;
+  pixels_owned: number;
+  total_spent: number;
+  is_admin: boolean;
 };
 
 export async function getStoredToken(): Promise<string | null> {
@@ -76,13 +103,30 @@ export const api = {
   buyPixel: (id: string) => request<Pixel>(`/pixels/${id}/buy`, { method: "POST" }),
   updatePixel: (
     id: string,
-    body: Partial<Pick<Pixel, "name" | "description" | "cover_image">>,
+    body: Partial<
+      Pick<
+        Pixel,
+        "name" | "description" | "cover_image" | "gallery" | "external_link" | "theme_color"
+      >
+    >,
   ) =>
     request<Pixel>(`/pixels/${id}`, {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
   myPixels: () => request<Pixel[]>("/profile/pixels"),
+
+  // Marketplace
+  listForSale: (id: string, price: number) =>
+    request<Pixel>(`/pixels/${id}/list`, {
+      method: "POST",
+      body: JSON.stringify({ price }),
+    }),
+  unlist: (id: string) => request<Pixel>(`/pixels/${id}/list`, { method: "DELETE" }),
+  buyResale: (id: string) => request<Pixel>(`/pixels/${id}/buy-resale`, { method: "POST" }),
+  pixelTransactions: (id: string) => request<Transaction[]>(`/pixels/${id}/transactions`),
+  marketListings: () => request<Pixel[]>("/listings"),
+  leaderboard: () => request<LeaderboardEntry[]>("/leaderboard"),
 
   // Admin
   adminUsers: () => request<User[]>("/admin/users"),

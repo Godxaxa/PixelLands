@@ -1,0 +1,44 @@
+{
+  "summary": "Backend-only testing of PixelLand Iteration 2 (secondary marketplace, transaction history, leaderboard, pixel personalization). Added 14 new pytest tests in /app/backend/tests/test_pixelland_marketplace.py — ALL 14 PASS against the public backend URL. Coverage: POST /api/pixels/{id}/list (price<=0 -> 400, non-owner -> 403, owner -> sets listed_price), DELETE /api/pixels/{id}/list (owner clears, non-owner -> 403), POST /api/pixels/{id}/buy-resale happy path (ownership transfer, buyer -price, seller +90% (price - floor(price*0.10) fee), buyer.pixels_owned+1, seller.pixels_owned-1, listed_price cleared), owner buying own listing -> 409, unlisted pixel -> 409, /api/pixels/{id}/transactions returns both 'primary' (fee=0, seller_id=None) and 'resale' (fee=floor(price*0.1), seller_proceeds=price-fee) entries with correct shape, /api/listings only returns pixels with listed_price>0, /api/leaderboard sorted by pixels_owned desc with total_spent aggregated from transactions (password_hash never leaked), PATCH /api/pixels/{id} accepts and persists gallery/external_link/theme_color, and GET /api/pixels/{id} surfaces gallery/external_link/theme_color/listed_price. A second non-admin buyer user was provisioned via direct mongo insert (users + user_sessions row) to exercise the resale flow with a real second identity; teardown deletes that user. Iteration-1 base suite still works (33/35 pass overall); the 2 iteration-1 failures are pre-existing TEST-DATA leaks (an iter1 admin test sets pixel 0_0 price to 77 and never restores), NOT a regression from iter2 changes.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/pixels (test isolation)", "issue": "Pre-existing iter1 test (test_admin_patch_pixel_price_and_clear_owner) mutates pixel price to 77 and never restores; causes 2 stale iter1 tests to fail on re-runs. Not an API bug, just test cleanup gap."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_pixelland_marketplace.py",
+    "/app/backend/tests/test_pixelland_api.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml",
+    "/app/test_reports/pytest/pytest_results_iter2.xml"
+  ],
+  "action_items": [
+    "(optional) Tighten iter1 cleanup: in test_admin_patch_pixel_price_and_clear_owner restore the pixel's original price so re-runs are idempotent (or relax the iter1 'price must be in seeded set' assertion).",
+    "(nice-to-have) Consider returning the seller's updated coin balance in the resale POST response to avoid an extra /auth/me round-trip from clients.",
+    "(nice-to-have) GET /api/listings could include the owner_name / x,y already (it does via _pixel_to_out) — good as-is."
+  ],
+  "critical_code_review_comments": [
+    "buy_resale uses a conditional atomic update {pixel_id, owner_id, listed_price} -> safe against double-buy races; then two separate $inc on users (buyer/seller) which are not transactional with the pixel update — acceptable for MVP but a partial failure could leave coins/pixels_owned inconsistent. Consider a MongoDB transaction or a compensating job.",
+    "Resale fee uses integer floor division ((price * 10) // 100). For odd prices like 15, fee=1 and proceeds=14; spec says floor(price*0.1) — matches.",
+    "leaderboard sort tiebreaks by total_spent desc (sort key is tuple (pixels_owned, total_spent)); reasonable, and password_hash is excluded from projection.",
+    "PixelUpdateIn allows owner to set theme_color/external_link to any string (no URL/hex validation). Low risk but consider basic regex validation for theme_color (#RRGGBB) and URL scheme check for external_link.",
+    "server.py is now ~740 lines — still readable but auth/pixels/marketplace/admin could be split into routers if it grows further.",
+    "_record_transaction is called AFTER user balance updates; if those updates fail the tx row never exists. For audit completeness consider writing the transaction first or wrapping in a session/transaction."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_pixelland_marketplace.py (new)"
+  ],
+  "success_rate": {"backend": "100% (14/14 iter2 new tests); 33/35 overall — 2 pre-existing iter1 test-isolation failures unrelated to iter2", "frontend": "not tested"},
+  "seed_data_creation": "Created one test buyer user (email test_buyer_<hex>@pixelland.test, 5000 coins, non-admin) + matching user_sessions row via direct mongo insert (MONGO_URL/DB_NAME from backend/.env). Cleaned up in fixture teardown. Two pixels are temporarily owned during the run and released back to unowned at module teardown via admin endpoint.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run: cd /app && python -m pytest backend/tests/test_pixelland_marketplace.py -v. The marketplace suite is self-contained: it admin-logs-in, provisions a second user directly in mongo (uses MONGO_URL+DB_NAME from backend/.env -> mongodb://localhost:27017 / test_database), runs the full list->buy-resale->transactions->leaderboard->personalization chain, then releases the test pixels. Iter1 has 2 failing tests on re-run due to a stale 'price=77' on pixel 0_0 set by an iter1 admin test; harmless and outside iter2 scope.",
+  "rca_of_issue": "N/A — no iteration-2 bugs found. Pre-existing iter1 failures root-caused above."
+}
