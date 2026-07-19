@@ -75,6 +75,7 @@ class UserOut(BaseModel):
     coins: int
     pixels_owned: int
     is_admin: bool
+    joined_at: Optional[str] = None
 
 
 class SessionOut(BaseModel):
@@ -86,6 +87,7 @@ class PixelOut(BaseModel):
     pixel_id: str
     x: int
     y: int
+    number: int
     price: int
     name: str
     description: Optional[str] = ""
@@ -163,6 +165,9 @@ def _to_aware(dt: datetime) -> datetime:
 
 
 def _user_to_out(u: dict) -> UserOut:
+    joined = u.get("created_at")
+    if isinstance(joined, datetime):
+        joined = _to_aware(joined).isoformat()
     return UserOut(
         user_id=u["user_id"],
         email=u["email"],
@@ -171,6 +176,7 @@ def _user_to_out(u: dict) -> UserOut:
         coins=int(u.get("coins", 0)),
         pixels_owned=int(u.get("pixels_owned", 0)),
         is_admin=bool(u.get("is_admin", False)),
+        joined_at=joined,
     )
 
 
@@ -178,10 +184,13 @@ def _pixel_to_out(p: dict) -> PixelOut:
     purchased_at = p.get("purchased_at")
     if isinstance(purchased_at, datetime):
         purchased_at = _to_aware(purchased_at).isoformat()
+    x = int(p["x"])
+    y = int(p["y"])
     return PixelOut(
         pixel_id=p["pixel_id"],
-        x=int(p["x"]),
-        y=int(p["y"]),
+        x=x,
+        y=y,
+        number=y * GRID_SIZE + x + 1,
         price=int(p["price"]),
         name=p.get("name") or "",
         description=p.get("description") or "",
@@ -735,6 +744,33 @@ async def admin_update_pixel(pixel_id: str, payload: AdminPixelUpdateIn, _: dict
 async def admin_reseed(_: dict = Depends(get_current_admin)):
     await seed_pixels()
     return {"ok": True, "total": await db.pixels.count_documents({})}
+
+
+@api.post("/admin/reset-map")
+async def admin_reset_map(_: dict = Depends(get_current_admin)):
+    """Wipes all ownership, listings and customizations from the grid.
+    Resets users.pixels_owned counter. Transactions are kept as historical log."""
+    await db.pixels.update_many({}, {"$set": {
+        "owner_id": None,
+        "owner_name": None,
+        "purchased_at": None,
+        "listed_price": None,
+        "gallery": [],
+        "external_link": "",
+        "theme_color": "#00E5FF",
+    }})
+    # Reset description+name back to defaults
+    async for p in db.pixels.find({}, {"_id": 0, "x": 1, "y": 1, "pixel_id": 1}):
+        await db.pixels.update_one(
+            {"pixel_id": p["pixel_id"]},
+            {"$set": {
+                "name": f"Pixel ({p['x']},{p['y']})",
+                "description": "An unclaimed digital territory awaiting a universe.",
+                "cover_image": DEFAULT_COVER,
+            }}
+        )
+    await db.users.update_many({}, {"$set": {"pixels_owned": 0}})
+    return {"ok": True}
 
 
 app.include_router(api)

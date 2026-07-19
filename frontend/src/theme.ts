@@ -9,6 +9,8 @@ export const colors = {
   brandSecondary: "#00B8D4",
   brandTertiary: "#00333D",
   onBrand: "#0F1115",
+  gold: "#FFD700",
+  goldDim: "#5A4A00",
   success: "#10B981",
   warning: "#F59E0B",
   error: "#EF4444",

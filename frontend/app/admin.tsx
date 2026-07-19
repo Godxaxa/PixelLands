@@ -64,7 +64,18 @@ export default function AdminScreen() {
           <Ionicons name="chevron-back" size={20} color={colors.onSurface} />
         </Pressable>
         <Text style={styles.headerTitle}>ADMIN</Text>
-        <View style={{ width: 36 }} />
+        <Pressable
+          testID="reset-map-btn"
+          onPress={async () => {
+            try {
+              await api.adminResetMap();
+              await load();
+            } catch {}
+          }}
+          style={[styles.iconBtn, { backgroundColor: colors.warning + "33" }]}
+        >
+          <Ionicons name="refresh" size={18} color={colors.warning} />
+        </Pressable>
       </View>
 
       <View style={styles.tabs}>

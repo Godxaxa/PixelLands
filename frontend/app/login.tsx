@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
   ActivityIndicator,
+  Dimensions,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -13,7 +14,14 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 
 import { useAuth } from "@/src/context/AuthContext";
+import { StarField } from "@/src/components/StarField";
 import { colors, radius, spacing } from "@/src/theme";
+
+const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get("window");
+
+function StarFieldWrap() {
+  return <StarField width={SCREEN_W} height={SCREEN_H} starCount={70} seed={11} />;
+}
 
 export default function LoginScreen() {
   const { loginWithGoogle, loginAsAdmin } = useAuth();
@@ -57,9 +65,12 @@ export default function LoginScreen() {
       testID="login-screen"
     >
       <View style={styles.glow} />
+      <View style={StyleSheet.absoluteFill}>
+        <StarFieldWrap />
+      </View>
       <View style={styles.content}>
         <Text style={styles.brand} testID="brand-title">PIXEL<Text style={{ color: colors.brand }}>LAND</Text></Text>
-        <Text style={styles.tagline}>Own a pixel. Own a universe.</Text>
+        <Text style={styles.tagline}>Funde seu universo no Multiverso.</Text>
 
         {!showAdmin ? (
           <>
@@ -112,11 +123,11 @@ export default function LoginScreen() {
               {busy ? (
                 <ActivityIndicator color={colors.onBrand} />
               ) : (
-                <Text style={styles.primaryBtnText}>Sign In</Text>
+                <Text style={styles.primaryBtnText}>Entrar</Text>
               )}
             </Pressable>
             <Pressable testID="back-to-google-link" onPress={() => setShowAdmin(false)}>
-              <Text style={styles.adminLink}>Back to Google</Text>
+              <Text style={styles.adminLink}>Voltar para Google</Text>
             </Pressable>
           </View>
         )}
@@ -126,7 +137,7 @@ export default function LoginScreen() {
         ) : null}
       </View>
 
-      <Text style={styles.footer}>MVP 1.0 · Pixel Coins · No real payments</Text>
+      <Text style={styles.footer}>MVP 1.0 · Pixel Coins · Sem pagamentos reais</Text>
     </KeyboardAvoidingView>
   );
 }

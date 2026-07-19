@@ -11,12 +11,14 @@ export type User = {
   coins: number;
   pixels_owned: number;
   is_admin: boolean;
+  joined_at?: string | null;
 };
 
 export type Pixel = {
   pixel_id: string;
   x: number;
   y: number;
+  number: number;
   price: number;
   name: string;
   description?: string;
@@ -152,4 +154,5 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
+  adminResetMap: () => request<{ ok: boolean }>("/admin/reset-map", { method: "POST" }),
 };

@@ -2,9 +2,13 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Dimensions,
+  Modal,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
   View,
   ScrollView,
 } from "react-native";
@@ -14,6 +18,8 @@ import Animated, {
   useAnimatedStyle,
   useSharedValue,
   withSpring,
+  withTiming,
+  withSequence,
 } from "react-native-reanimated";
 import * as Haptics from "expo-haptics";
 import { Ionicons } from "@expo/vector-icons";
@@ -23,22 +29,24 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { api, Pixel } from "@/src/api/client";
 import { useAuth } from "@/src/context/AuthContext";
+import { StarField } from "@/src/components/StarField";
 import { colors, radius, spacing } from "@/src/theme";
 
 const GRID = 20;
-const { width: SCREEN_W } = Dimensions.get("window");
+const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get("window");
 const BASE_BOARD = Math.min(SCREEN_W, 500) - spacing.xl * 2;
 const CELL = BASE_BOARD / GRID;
 
 type Status = "available" | "owned" | "mine" | "listed" | "mine-listed";
 
-function statusColor(s: Status) {
-  if (s === "mine-listed") return "#FFD93D";
-  if (s === "mine") return colors.brand;
-  if (s === "listed") return "#FF9F1C";
-  if (s === "owned") return "#3A3F47";
-  return "#11252C";
-}
+  function statusColor(s: Status) {
+    if (s === "mine-listed") return colors.gold;
+    if (s === "mine") return colors.brand;
+    if (s === "listed") return colors.gold;
+    if (s === "owned") return "#3A3F47";
+    return "#11252C";
+  }
+  
 
 export default function MapScreen() {
   const { user, logout, refresh } = useAuth();
@@ -49,6 +57,10 @@ export default function MapScreen() {
   const [selected, setSelected] = useState<Pixel | null>(null);
   const [buying, setBuying] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Post-buy celebration + wizard
+  const [celebrate, setCelebrate] = useState<Pixel | null>(null);
+  const [wizard, setWizard] = useState<Pixel | null>(null);
+  const sweep = useSharedValue(0);
 
   const scale = useSharedValue(1);
   const savedScale = useSharedValue(1);
@@ -126,15 +138,31 @@ export default function MapScreen() {
       setPixels((prev) =>
         prev.map((p) => (p.pixel_id === updated.pixel_id ? updated : p)),
       );
-      setSelected(updated);
+      setSelected(null);
       await refresh();
+      // Trigger celebration animation + wizard
+      setCelebrate(updated);
+      sweep.value = 0;
+      sweep.value = withSequence(
+        withTiming(1, { duration: 900 }),
+        withTiming(0, { duration: 1 }),
+      );
+      setTimeout(() => {
+        setCelebrate(null);
+        setWizard(updated);
+      }, 1400);
     } catch (e: any) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
-      setErr(e?.message || "Buy failed");
+      setErr(e?.message || "Falha na compra");
     } finally {
       setBuying(false);
     }
-  }, [selected, refresh]);
+  }, [selected, refresh, sweep]);
+
+  const sweepStyle = useAnimatedStyle(() => ({
+    opacity: sweep.value > 0 && sweep.value < 1 ? 1 : 0,
+    transform: [{ translateX: -SCREEN_W + sweep.value * SCREEN_W * 2 }],
+  }));
 
   const zoomIn = () => {
     scale.value = Math.min(4, scale.value + 0.4);
@@ -197,6 +225,10 @@ export default function MapScreen() {
 
   return (
     <View style={styles.container} testID="map-screen">
+      {/* Cosmic background */}
+      <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+        <StarField width={SCREEN_W} height={SCREEN_H} starCount={90} seed={42} />
+      </View>
       {/* HUD top */}
       <View style={[styles.hudTop, { paddingTop: insets.top + spacing.sm }]}>
         <Pressable
@@ -259,15 +291,15 @@ export default function MapScreen() {
         </View>
         <View style={styles.legendChip}>
           <View style={[styles.legendDot, { backgroundColor: "#3A3F47" }]} />
-          <Text style={styles.legendText}>{sold} sold</Text>
+          <Text style={styles.legendText}>{sold} criados</Text>
         </View>
         <View style={styles.legendChip}>
-          <View style={[styles.legendDot, { backgroundColor: "#FF9F1C" }]} />
-          <Text style={styles.legendText}>{listed} for sale</Text>
+          <View style={[styles.legendDot, { backgroundColor: colors.gold }]} />
+          <Text style={styles.legendText}>{listed} à venda</Text>
         </View>
         <View style={styles.legendChip}>
           <View style={[styles.legendDot, { backgroundColor: colors.brand }]} />
-          <Text style={styles.legendText}>{user?.pixels_owned || 0} yours</Text>
+          <Text style={styles.legendText}>{user?.pixels_owned || 0} seus</Text>
         </View>
       </View>
 
@@ -327,6 +359,9 @@ export default function MapScreen() {
                 contentFit="cover"
               />
               <View style={{ padding: spacing.lg, gap: spacing.sm }}>
+                <Text style={[styles.sheetCoord, { color: colors.gold }]}>
+                  UNIVERSO #{selected.number}
+                </Text>
                 <Text style={styles.sheetTitle}>{selected.name}</Text>
                 <Text style={styles.sheetCoord}>
                   X {selected.x} · Y {selected.y}
@@ -334,25 +369,25 @@ export default function MapScreen() {
                 <Text style={styles.sheetDesc}>{selected.description}</Text>
 
                 <View style={styles.row}>
-                  <Text style={styles.rowLabel}>Owner</Text>
+                  <Text style={styles.rowLabel}>{selected.owner_id ? "Fundador" : "Status"}</Text>
                   <Text style={styles.rowValue}>
-                    {selected.owner_name || "Unclaimed"}
+                    {selected.owner_name || "Disponível"}
                   </Text>
                 </View>
                 <View style={styles.row}>
                   <Text style={styles.rowLabel}>
-                    {selected.listed_price ? "Resale" : "Price"}
+                    {selected.listed_price ? "Revenda" : "Preço"}
                   </Text>
                   <Text style={styles.rowValue}>
-                    <Ionicons name="diamond" size={14} color={selected.listed_price ? "#FF9F1C" : colors.brand} />{" "}
+                    <Ionicons name="diamond" size={14} color={selected.listed_price ? colors.gold : colors.brand} />{" "}
                     {selected.listed_price || selected.price}
                   </Text>
                 </View>
                 {selected.purchased_at ? (
                   <View style={styles.row}>
-                    <Text style={styles.rowLabel}>Purchased</Text>
+                    <Text style={styles.rowLabel}>Criado em</Text>
                     <Text style={styles.rowValue}>
-                      {new Date(selected.purchased_at).toLocaleDateString()}
+                      {new Date(selected.purchased_at).toLocaleDateString("pt-BR")}
                     </Text>
                   </View>
                 ) : null}
@@ -374,7 +409,7 @@ export default function MapScreen() {
                       <ActivityIndicator color={colors.onBrand} />
                     ) : (
                       <Text style={styles.buyBtnText}>
-                        Buy for {selected.price} coins
+                        Comprar Universo · {selected.price}
                       </Text>
                     )}
                   </Pressable>
@@ -390,8 +425,8 @@ export default function MapScreen() {
                   >
                     <Text style={styles.secondaryBtnText}>
                       {selected.listed_price && selected.owner_id !== user?.user_id
-                        ? `Open · Buy for ${selected.listed_price} coins`
-                        : "View pixel page"}
+                        ? `Comprar · ${selected.listed_price} coins`
+                        : "Visitar Universo"}
                     </Text>
                   </Pressable>
                 )}
@@ -400,7 +435,143 @@ export default function MapScreen() {
           </View>
         </View>
       ) : null}
+      {/* Celebration sweep — light beam across screen after a successful buy */}
+      {celebrate ? (
+        <View pointerEvents="none" style={[StyleSheet.absoluteFill, { alignItems: "center", justifyContent: "center", zIndex: 8 }]}>
+          <Animated.View
+            style={[
+              {
+                position: "absolute",
+                width: 80,
+                height: SCREEN_H,
+                backgroundColor: colors.gold,
+                opacity: 0.4,
+              },
+              sweepStyle,
+            ]}
+          />
+          <View style={styles.celebrateCard}>
+            <Text style={styles.celebrateEmoji}>🌌</Text>
+            <Text style={styles.celebrateTitle}>Parabéns!</Text>
+            <Text style={styles.celebrateBody}>
+              Você acaba de fundar um novo universo.{"\n"}Agora este espaço faz parte do Multiverso PixelLand.
+            </Text>
+          </View>
+        </View>
+      ) : null}
+
+      {/* Post-buy wizard: name + cover + description */}
+      {wizard ? (
+        <WizardModal
+          pixel={wizard}
+          onClose={() => setWizard(null)}
+          onSaved={(p) => {
+            setPixels((prev) => prev.map((x) => (x.pixel_id === p.pixel_id ? p : x)));
+            setWizard(null);
+          }}
+        />
+      ) : null}
     </View>
+  );
+}
+
+function WizardModal({
+  pixel,
+  onClose,
+  onSaved,
+}: {
+  pixel: Pixel;
+  onClose: () => void;
+  onSaved: (p: Pixel) => void;
+}) {
+  const [name, setName] = useState(`Universo #${pixel.number}`);
+  const [cover, setCover] = useState(pixel.cover_image || "");
+  const [description, setDescription] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const onSave = async () => {
+    try {
+      setSaving(true);
+      const updated = await api.updatePixel(pixel.pixel_id, {
+        name: name.trim() || `Universo #${pixel.number}`,
+        description,
+        cover_image: cover,
+      });
+      onSaved(updated);
+    } catch (e: any) {
+      setErr(e?.message || "Falha ao salvar");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal visible animationType="slide" transparent onRequestClose={onClose}>
+      <KeyboardAvoidingView
+        style={styles.wizWrap}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+        <Pressable style={styles.wizBackdrop} onPress={onClose} />
+        <View style={styles.wizSheet} testID="post-buy-wizard">
+          <View style={styles.wizHandle} />
+          <ScrollView contentContainerStyle={{ gap: spacing.md, paddingVertical: spacing.md }}>
+            <Text style={styles.wizGold}>UNIVERSO #{pixel.number}</Text>
+            <Text style={styles.wizTitle}>Personalize seu universo</Text>
+            <Text style={styles.wizSub}>Dê uma identidade ao novo território. Você pode editar depois.</Text>
+
+            <Text style={styles.wizLabel}>Nome do Universo</Text>
+            <TextInput
+              testID="wiz-name"
+              style={styles.wizInput}
+              value={name}
+              onChangeText={setName}
+              placeholder="Ex.: Nebulosa Aurora"
+              placeholderTextColor={colors.onSurfaceTertiary}
+            />
+
+            <Text style={styles.wizLabel}>Foto de capa (URL)</Text>
+            <TextInput
+              testID="wiz-cover"
+              style={styles.wizInput}
+              value={cover}
+              onChangeText={setCover}
+              placeholder="https://..."
+              placeholderTextColor={colors.onSurfaceTertiary}
+              autoCapitalize="none"
+            />
+
+            <Text style={styles.wizLabel}>Descrição</Text>
+            <TextInput
+              testID="wiz-desc"
+              style={[styles.wizInput, { minHeight: 90, textAlignVertical: "top" }]}
+              value={description}
+              onChangeText={setDescription}
+              placeholder="Conte a história do seu universo..."
+              placeholderTextColor={colors.onSurfaceTertiary}
+              multiline
+            />
+
+            {err ? <Text style={{ color: colors.error }}>{err}</Text> : null}
+            <Pressable
+              testID="wiz-save"
+              style={[styles.wizPrimary, saving && { opacity: 0.6 }]}
+              onPress={onSave}
+              disabled={saving}
+            >
+              {saving ? (
+                <ActivityIndicator color={colors.onBrand} />
+              ) : (
+                <Text style={styles.wizPrimaryText}>Salvar e continuar</Text>
+              )}
+            </Pressable>
+            <Pressable testID="wiz-skip" onPress={onClose}>
+              <Text style={styles.wizSkip}>Pular por enquanto</Text>
+            </Pressable>
+          </ScrollView>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
   );
 }
 
@@ -546,4 +717,71 @@ const styles = StyleSheet.create({
   },
   secondaryBtnText: { color: colors.brand, fontWeight: "700", fontSize: 15, letterSpacing: 1 },
   error: { color: colors.error, marginTop: spacing.sm },
+  // Celebration
+  celebrateCard: {
+    backgroundColor: colors.surfaceSecondary,
+    borderColor: colors.gold,
+    borderWidth: 1,
+    borderRadius: radius.lg,
+    padding: spacing.xl,
+    marginHorizontal: spacing.xl,
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  celebrateEmoji: { fontSize: 56 },
+  celebrateTitle: { color: colors.gold, fontSize: 22, fontWeight: "800", letterSpacing: 2 },
+  celebrateBody: {
+    color: colors.onSurfaceSecondary,
+    fontSize: 13,
+    textAlign: "center",
+    lineHeight: 20,
+  },
+  // Wizard
+  wizWrap: { flex: 1, justifyContent: "flex-end" },
+  wizBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "#000000AA" },
+  wizSheet: {
+    backgroundColor: colors.surfaceSecondary,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: spacing.lg,
+    maxHeight: "85%",
+    borderTopColor: colors.gold,
+    borderTopWidth: 1,
+  },
+  wizHandle: {
+    alignSelf: "center",
+    width: 40,
+    height: 4,
+    backgroundColor: colors.borderStrong,
+    borderRadius: 2,
+    marginBottom: spacing.sm,
+  },
+  wizGold: { color: colors.gold, fontSize: 11, letterSpacing: 3, fontWeight: "700" },
+  wizTitle: { color: colors.onSurface, fontSize: 22, fontWeight: "800" },
+  wizSub: { color: colors.onSurfaceSecondary, fontSize: 13, lineHeight: 18 },
+  wizLabel: { color: colors.onSurfaceTertiary, fontSize: 11, letterSpacing: 2, marginTop: spacing.sm },
+  wizInput: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderWidth: 1,
+    color: colors.onSurface,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    borderRadius: radius.md,
+    fontSize: 15,
+  },
+  wizPrimary: {
+    backgroundColor: colors.brand,
+    paddingVertical: spacing.lg,
+    borderRadius: radius.pill,
+    alignItems: "center",
+    marginTop: spacing.lg,
+  },
+  wizPrimaryText: { color: colors.onBrand, fontWeight: "700", letterSpacing: 1 },
+  wizSkip: {
+    color: colors.onSurfaceTertiary,
+    textAlign: "center",
+    marginTop: spacing.md,
+    fontSize: 13,
+  },
 });

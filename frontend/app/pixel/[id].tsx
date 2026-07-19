@@ -456,9 +456,9 @@ export default function PixelDetail() {
           ) : null}
 
           {/* Transaction History */}
-          <Text style={styles.sectionLabel}>TRANSACTION HISTORY</Text>
+          <Text style={styles.sectionLabel}>HISTÓRICO DE TRANSAÇÕES</Text>
           {txs.length === 0 ? (
-            <Text style={styles.empty}>No transactions yet</Text>
+            <Text style={styles.empty}>Nenhuma transação ainda</Text>
           ) : (
             <View style={{ gap: spacing.sm }}>
               {txs.map((t) => (

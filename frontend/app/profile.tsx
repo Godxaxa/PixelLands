@@ -45,13 +45,13 @@ export default function ProfileScreen() {
         <Pressable testID="back-btn" onPress={() => router.back()} style={styles.iconBtn}>
           <Ionicons name="chevron-back" size={20} color={colors.onSurface} />
         </Pressable>
-        <Text style={styles.headerTitle}>Profile</Text>
+        <Text style={styles.headerTitle}>Perfil</Text>
         <Pressable
           testID="profile-leaderboard-btn"
           onPress={() => router.push("/leaderboard")}
           style={styles.iconBtn}
         >
-          <Ionicons name="trophy" size={18} color={colors.brand} />
+          <Ionicons name="trophy" size={18} color={colors.gold} />
         </Pressable>
       </View>
 
@@ -73,25 +73,30 @@ export default function ProfileScreen() {
           </View>
           <View style={styles.statBox}>
             <Text style={styles.statNum} testID="stat-pixels">{user?.pixels_owned ?? 0}</Text>
-            <Text style={styles.statLabel}>Pixels</Text>
+            <Text style={styles.statLabel}>Universos</Text>
           </View>
         </View>
+        {user?.joined_at ? (
+          <Text style={styles.joined} testID="profile-joined">
+            Entrou em {new Date(user.joined_at).toLocaleDateString("pt-BR")}
+          </Text>
+        ) : null}
       </View>
 
-      <Text style={styles.sectionLabel}>YOUR TERRITORIES</Text>
+      <Text style={styles.sectionLabel}>SEUS UNIVERSOS</Text>
 
       {loading ? (
         <ActivityIndicator color={colors.brand} style={{ marginTop: spacing.xl }} />
       ) : mine.length === 0 ? (
         <View style={styles.empty} testID="empty-pixels">
           <Ionicons name="grid-outline" size={48} color={colors.onSurfaceTertiary} />
-          <Text style={styles.emptyText}>No pixels owned yet</Text>
+          <Text style={styles.emptyText}>Você ainda não fundou universos</Text>
           <Pressable
             testID="goto-map-btn"
             style={styles.primaryBtn}
             onPress={() => router.push("/map")}
           >
-            <Text style={styles.primaryBtnText}>Browse Map</Text>
+            <Text style={styles.primaryBtnText}>Explorar mapa</Text>
           </Pressable>
         </View>
       ) : (
@@ -110,7 +115,7 @@ export default function ProfileScreen() {
               <Image source={{ uri: item.cover_image }} style={styles.gridImg} />
               <View style={styles.gridInfo}>
                 <Text style={styles.gridName} numberOfLines={1}>{item.name}</Text>
-                <Text style={styles.gridCoord}>({item.x},{item.y})</Text>
+                <Text style={styles.gridCoord}>Universo #{item.number}</Text>
               </View>
             </Pressable>
           )}
@@ -159,6 +164,7 @@ const styles = StyleSheet.create({
   avatarFallback: { alignItems: "center", justifyContent: "center" },
   name: { color: colors.onSurface, fontSize: 22, fontWeight: "700" },
   email: { color: colors.onSurfaceSecondary, fontSize: 13 },
+  joined: { color: colors.gold, fontSize: 12, marginTop: spacing.md, letterSpacing: 1 },
   stats: { flexDirection: "row", gap: spacing.lg, marginTop: spacing.lg },
   statBox: {
     flex: 1,
