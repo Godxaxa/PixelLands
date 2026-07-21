@@ -55,6 +55,20 @@ export type LeaderboardEntry = {
   is_admin: boolean;
 };
 
+export type Media = {
+  media_id: string;
+  pixel_id: string;
+  kind: "image" | "video";
+  url: string;
+  thumbnail_url: string;
+  bytes: number;
+  mime_type: string;
+  duration?: number | null;
+  width?: number | null;
+  height?: number | null;
+  created_at: string;
+};
+
 export async function getStoredToken(): Promise<string | null> {
   return (await storage.secureGet<string>(TOKEN_KEY, "")) || null;
 }
@@ -155,4 +169,63 @@ export const api = {
       body: JSON.stringify(body),
     }),
   adminResetMap: () => request<{ ok: boolean }>("/admin/reset-map", { method: "POST" }),
+
+  // Media
+  listMedia: (pixel_id: string) => request<Media[]>(`/pixels/${pixel_id}/media`),
+  deleteMedia: (pixel_id: string, media_id: string) =>
+    request<{ ok: boolean }>(`/pixels/${pixel_id}/media/${media_id}`, { method: "DELETE" }),
 };
+
+/**
+ * Upload a picked asset (photo or video) via multipart/form-data.
+ * Uses XMLHttpRequest so we can report upload progress.
+ * Returns the created Media doc.
+ */
+export function uploadMedia(
+  pixel_id: string,
+  asset: {
+    uri: string;
+    name: string;
+    type: string;
+    file?: Blob; // web
+  },
+  onProgress?: (pct: number) => void,
+): Promise<Media> {
+  return new Promise(async (resolve, reject) => {
+    const token = await getStoredToken();
+    const form = new FormData();
+    if (asset.file) {
+      form.append("file", asset.file, asset.name);
+    } else {
+      form.append(
+        "file",
+        // React Native FormData accepts { uri, name, type }
+        { uri: asset.uri, name: asset.name, type: asset.type } as any,
+      );
+    }
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${BASE}/api/pixels/${pixel_id}/media`);
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText));
+        } catch (e) {
+          reject(e);
+        }
+      } else {
+        try {
+          const j = JSON.parse(xhr.responseText);
+          reject(new Error(j.detail || `HTTP ${xhr.status}`));
+        } catch {
+          reject(new Error(`HTTP ${xhr.status}`));
+        }
+      }
+    };
+    xhr.onerror = () => reject(new Error("Network error"));
+    xhr.send(form);
+  });
+}

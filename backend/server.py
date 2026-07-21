@@ -13,15 +13,19 @@ from __future__ import annotations
 import os
 import logging
 import random
+import shutil
+import tempfile
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional, List
 
 import bcrypt
+import cloudinary
+import cloudinary.uploader
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, APIRouter, HTTPException, Header, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, Header, Depends, UploadFile, File
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.cors import CORSMiddleware
@@ -47,6 +51,24 @@ DEFAULT_COVER = (
 
 ADMIN_EMAIL = os.environ["ADMIN_EMAIL"].lower().strip()
 ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
+
+# --- Cloudinary media storage ---
+CLOUDINARY_CLOUD_NAME = os.environ["CLOUDINARY_CLOUD_NAME"]
+CLOUDINARY_API_KEY = os.environ["CLOUDINARY_API_KEY"]
+CLOUDINARY_API_SECRET = os.environ["CLOUDINARY_API_SECRET"]
+
+cloudinary.config(
+    cloud_name=CLOUDINARY_CLOUD_NAME,
+    api_key=CLOUDINARY_API_KEY,
+    api_secret=CLOUDINARY_API_SECRET,
+    secure=True,
+)
+
+ALLOWED_IMAGE_MIMES = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
+ALLOWED_VIDEO_MIMES = {"video/mp4", "video/quicktime", "video/webm", "video/x-quicktime"}
+MAX_IMAGE_BYTES = 10 * 1024 * 1024        # 10 MB
+MAX_VIDEO_BYTES = 200 * 1024 * 1024       # 200 MB
+MAX_MEDIA_PER_PIXEL = 20
 
 EMERGENT_SESSION_DATA_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
 
@@ -192,6 +214,20 @@ class LeaderboardEntry(BaseModel):
     pixels_owned: int
     total_spent: int
     is_admin: bool
+
+
+class MediaOut(BaseModel):
+    media_id: str
+    pixel_id: str
+    kind: str  # "image" | "video"
+    url: str
+    thumbnail_url: str
+    bytes: int
+    mime_type: str
+    duration: Optional[float] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    created_at: str
 
 
 class AdminUserUpdateIn(BaseModel):
@@ -347,6 +383,8 @@ async def ensure_indexes():
     await db.transactions.create_index("pixel_id")
     await db.transactions.create_index("buyer_id")
     await db.transactions.create_index("timestamp")
+    await db.pixel_media.create_index("pixel_id")
+    await db.pixel_media.create_index("media_id", unique=True)
 
 
 # ---------------- App / Router ----------------
@@ -694,6 +732,158 @@ async def listings():
         {"_id": 0},
     ).sort([("listed_price", 1)]).to_list(length=TOTAL_PIXELS)
     return [_pixel_to_out(p) for p in items]
+
+
+# -------- Media Gallery (Cloudinary) --------
+
+
+def _media_to_out(m: dict) -> MediaOut:
+    ts = m.get("created_at")
+    if isinstance(ts, datetime):
+        ts = _to_aware(ts).isoformat()
+    return MediaOut(
+        media_id=m["media_id"],
+        pixel_id=m["pixel_id"],
+        kind=m["kind"],
+        url=m["url"],
+        thumbnail_url=m.get("thumbnail_url") or m["url"],
+        bytes=int(m.get("bytes") or 0),
+        mime_type=m.get("mime_type") or "",
+        duration=m.get("duration"),
+        width=m.get("width"),
+        height=m.get("height"),
+        created_at=ts or "",
+    )
+
+
+@api.get("/pixels/{pixel_id}/media", response_model=List[MediaOut])
+async def list_media(pixel_id: str):
+    items = await db.pixel_media.find({"pixel_id": pixel_id}, {"_id": 0}).sort([("created_at", -1)]).to_list(length=MAX_MEDIA_PER_PIXEL + 5)
+    return [_media_to_out(m) for m in items]
+
+
+@api.post("/pixels/{pixel_id}/media", response_model=MediaOut)
+async def upload_media(
+    pixel_id: str,
+    file: UploadFile = File(...),
+    user: dict = Depends(get_current_user),
+):
+    p = await db.pixels.find_one({"pixel_id": pixel_id}, {"_id": 0})
+    if not p:
+        raise HTTPException(status_code=404, detail="Pixel not found")
+    if p.get("owner_id") != user["user_id"] and not user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Only the owner can add media")
+
+    # Enforce max 20 per pixel
+    count = await db.pixel_media.count_documents({"pixel_id": pixel_id})
+    if count >= MAX_MEDIA_PER_PIXEL:
+        raise HTTPException(status_code=409, detail=f"Limite atingido ({MAX_MEDIA_PER_PIXEL} arquivos)")
+
+    mime = (file.content_type or "").lower()
+    is_image = mime in ALLOWED_IMAGE_MIMES
+    is_video = mime in ALLOWED_VIDEO_MIMES
+    if not is_image and not is_video:
+        raise HTTPException(status_code=415, detail=f"Formato não suportado: {mime}")
+
+    # Copy to a tmp file so cloudinary SDK can stream it.
+    suffix = Path(file.filename or "upload").suffix or (".jpg" if is_image else ".mp4")
+    tmp_path: Optional[str] = None
+    total = 0
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if is_image and total > MAX_IMAGE_BYTES:
+                    raise HTTPException(status_code=413, detail="Imagem maior que 10 MB")
+                if is_video and total > MAX_VIDEO_BYTES:
+                    raise HTTPException(status_code=413, detail="Vídeo maior que 200 MB")
+                tmp.write(chunk)
+            tmp_path = tmp.name
+
+        folder = f"pixelland/pixel_{pixel_id}"
+        try:
+            if is_video:
+                result = cloudinary.uploader.upload_large(
+                    tmp_path,
+                    resource_type="video",
+                    folder=folder,
+                    chunk_size=6_000_000,
+                )
+                thumbnail_url = (
+                    f"https://res.cloudinary.com/{CLOUDINARY_CLOUD_NAME}"
+                    f"/video/upload/so_0/{result['public_id']}.jpg"
+                )
+                kind = "video"
+            else:
+                result = cloudinary.uploader.upload(
+                    tmp_path,
+                    resource_type="image",
+                    folder=folder,
+                )
+                thumbnail_url = result["secure_url"]
+                kind = "image"
+        except Exception as e:
+            logger.exception("Cloudinary upload failed")
+            raise HTTPException(status_code=502, detail=f"Falha no upload: {e}")
+
+        now = now_utc()
+        doc = {
+            "media_id": f"med_{uuid.uuid4().hex[:14]}",
+            "pixel_id": pixel_id,
+            "kind": kind,
+            "url": result["secure_url"],
+            "thumbnail_url": thumbnail_url,
+            "public_id": result["public_id"],
+            "resource_type": result.get("resource_type") or kind,
+            "bytes": int(result.get("bytes") or total),
+            "mime_type": mime,
+            "duration": result.get("duration"),
+            "width": result.get("width"),
+            "height": result.get("height"),
+            "uploaded_by": user["user_id"],
+            "created_at": now,
+        }
+        await db.pixel_media.insert_one(doc)
+        # Update pixel.gallery (kept for backward compatibility) with URL
+        await db.pixels.update_one(
+            {"pixel_id": pixel_id},
+            {"$push": {"gallery": result["secure_url"]}},
+        )
+        doc.pop("_id", None)
+        return _media_to_out(doc)
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
+@api.delete("/pixels/{pixel_id}/media/{media_id}")
+async def delete_media(pixel_id: str, media_id: str, user: dict = Depends(get_current_user)):
+    p = await db.pixels.find_one({"pixel_id": pixel_id}, {"_id": 0})
+    if not p:
+        raise HTTPException(status_code=404, detail="Pixel not found")
+    if p.get("owner_id") != user["user_id"] and not user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Only the owner can delete media")
+    m = await db.pixel_media.find_one({"media_id": media_id, "pixel_id": pixel_id}, {"_id": 0})
+    if not m:
+        raise HTTPException(status_code=404, detail="Media not found")
+    # Delete from Cloudinary
+    try:
+        cloudinary.uploader.destroy(
+            m["public_id"],
+            resource_type=m.get("resource_type") or m["kind"],
+            invalidate=True,
+        )
+    except Exception:
+        logger.exception("Cloudinary destroy failed (soft-continue)")
+    await db.pixel_media.delete_one({"media_id": media_id})
+    await db.pixels.update_one({"pixel_id": pixel_id}, {"$pull": {"gallery": m["url"]}})
+    return {"ok": True}
 
 
 # -------- Leaderboard --------

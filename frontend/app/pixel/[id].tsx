@@ -17,9 +17,11 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
+import * as ImagePicker from "expo-image-picker";
 
-import { api, Pixel, Transaction } from "@/src/api/client";
+import { api, Media, Pixel, Transaction, uploadMedia } from "@/src/api/client";
 import { useAuth } from "@/src/context/AuthContext";
+import { GalleryViewer, LoadingThumb, MediaThumb } from "@/src/components/Gallery";
 import { colors, radius, spacing } from "@/src/theme";
 
 const THEMES = ["#00E5FF", "#FF6B6B", "#FFD93D", "#6BCB77", "#A66CFF", "#FF9F1C"];
@@ -40,8 +42,12 @@ export default function PixelDetail() {
   const [cover, setCover] = useState("");
   const [externalLink, setExternalLink] = useState("");
   const [themeColor, setThemeColor] = useState(colors.brand);
-  const [galleryInput, setGalleryInput] = useState("");
-  const [gallery, setGallery] = useState<string[]>([]);
+
+  // Media gallery (Cloudinary-backed)
+  const [media, setMedia] = useState<Media[]>([]);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [viewerIdx, setViewerIdx] = useState<number | null>(null);
+  const [mediaMsg, setMediaMsg] = useState<string | null>(null);
 
   // marketplace
   const [listPriceInput, setListPriceInput] = useState("");
@@ -54,16 +60,20 @@ export default function PixelDetail() {
     if (!id) return;
     try {
       setLoading(true);
-      const [p, t] = await Promise.all([api.getPixel(id), api.pixelTransactions(id)]);
+      const [p, t, m] = await Promise.all([
+        api.getPixel(id),
+        api.pixelTransactions(id),
+        api.listMedia(id),
+      ]);
       setPixel(p);
       setName(p.name);
       setDescription(p.description || "");
       setCover(p.cover_image || "");
       setExternalLink(p.external_link || "");
       setThemeColor(p.theme_color || colors.brand);
-      setGallery(p.gallery || []);
       setListPriceInput(p.listed_price ? String(p.listed_price) : String(p.price));
       setTxs(t);
+      setMedia(m);
     } catch (e: any) {
       setErr(e?.message || "Failed");
     } finally {
@@ -87,7 +97,6 @@ export default function PixelDetail() {
         cover_image: cover,
         external_link: externalLink,
         theme_color: themeColor,
-        gallery,
       });
       setPixel(updated);
       setEditing(false);
@@ -98,14 +107,61 @@ export default function PixelDetail() {
     }
   };
 
-  const addToGallery = () => {
-    const url = galleryInput.trim();
-    if (!url) return;
-    setGallery((g) => [...g, url]);
-    setGalleryInput("");
+  const pickAndUpload = async (kind: "image" | "video") => {
+    if (!pixel) return;
+    if (media.length >= 20) {
+      setMediaMsg("Limite atingido (20 arquivos)");
+      return;
+    }
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        setMediaMsg("Permissão de galeria negada");
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: kind === "video" ? ["videos"] : ["images"],
+        allowsEditing: false,
+        quality: 1,
+        videoMaxDuration: 300,
+      });
+      if (res.canceled) return;
+      const asset = res.assets[0];
+      const fallbackName =
+        asset.fileName ||
+        `upload_${Date.now()}.${(asset.mimeType || (kind === "video" ? "video/mp4" : "image/jpeg")).split("/")[1] || (kind === "video" ? "mp4" : "jpg")}`;
+      setUploadProgress(0);
+      setMediaMsg(null);
+      const uploaded = await uploadMedia(
+        pixel.pixel_id,
+        {
+          uri: asset.uri,
+          name: fallbackName,
+          type: asset.mimeType || (kind === "video" ? "video/mp4" : "image/jpeg"),
+          file: (asset as any).file, // web
+        },
+        (pct) => setUploadProgress(pct),
+      );
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      setMedia((prev) => [uploaded, ...prev]);
+      setMediaMsg("Upload concluído ✓");
+      setTimeout(() => setMediaMsg(null), 2500);
+    } catch (e: any) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+      setMediaMsg(e?.message || "Falha no upload");
+    } finally {
+      setUploadProgress(null);
+    }
   };
-  const removeFromGallery = (idx: number) => {
-    setGallery((g) => g.filter((_, i) => i !== idx));
+
+  const removeMedia = async (m: Media) => {
+    if (!pixel) return;
+    try {
+      await api.deleteMedia(pixel.pixel_id, m.media_id);
+      setMedia((prev) => prev.filter((x) => x.media_id !== m.media_id));
+    } catch (e: any) {
+      setMediaMsg(e?.message || "Falha ao excluir");
+    }
   };
 
   const onList = async () => {
@@ -198,8 +254,8 @@ export default function PixelDetail() {
             </Pressable>
           ) : null}
           <View style={styles.coverInfo}>
-            <Text style={[styles.coord, { color: accent }]} testID="pixel-coord">
-              X {pixel.x} · Y {pixel.y}
+            <Text style={[styles.coord, { color: colors.gold }]} testID="pixel-coord">
+              UNIVERSO #{pixel.number}
             </Text>
             <Text style={styles.title} numberOfLines={2} testID="pixel-title">{pixel.name}</Text>
           </View>
@@ -207,22 +263,22 @@ export default function PixelDetail() {
 
         <View style={{ padding: spacing.lg, gap: spacing.md }}>
           <View style={styles.row}>
-            <Text style={styles.rowLabel}>Owner</Text>
+            <Text style={styles.rowLabel}>Fundador</Text>
             <Text style={styles.rowValue} testID="pixel-owner">
-              {pixel.owner_name || "Unclaimed"}
+              {pixel.owner_name || "Sem dono"}
             </Text>
           </View>
           <View style={styles.row}>
-            <Text style={styles.rowLabel}>Mint Price</Text>
+            <Text style={styles.rowLabel}>Preço de mint</Text>
             <Text style={styles.rowValue}>
               <Ionicons name="diamond" size={14} color={accent} /> {pixel.price}
             </Text>
           </View>
           {pixel.purchased_at ? (
             <View style={styles.row}>
-              <Text style={styles.rowLabel}>Purchased</Text>
+              <Text style={styles.rowLabel}>Criado em</Text>
               <Text style={styles.rowValue}>
-                {new Date(pixel.purchased_at).toLocaleString()}
+                {new Date(pixel.purchased_at).toLocaleString("pt-BR")}
               </Text>
             </View>
           ) : null}
@@ -252,36 +308,64 @@ export default function PixelDetail() {
             </>
           ) : null}
 
-          {/* Gallery */}
-          {gallery.length > 0 || editing ? (
-            <>
-              <Text style={styles.sectionLabel}>GALLERY</Text>
-              <FlatList
-                horizontal
-                data={gallery}
-                keyExtractor={(u, i) => `${u}-${i}`}
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={{ gap: spacing.sm }}
-                ListEmptyComponent={
-                  <Text style={styles.empty}>No images yet</Text>
-                }
-                renderItem={({ item, index }) => (
-                  <View style={styles.galleryItem}>
-                    <Image source={{ uri: item }} style={styles.galleryImg} contentFit="cover" />
-                    {editing ? (
-                      <Pressable
-                        testID={`gallery-remove-${index}`}
-                        style={styles.galleryRemove}
-                        onPress={() => removeFromGallery(index)}
-                      >
-                        <Ionicons name="close" size={14} color={colors.onSurface} />
-                      </Pressable>
-                    ) : null}
-                  </View>
-                )}
-              />
-            </>
+          {/* Media Gallery */}
+          <View style={styles.galleryHeader}>
+            <Text style={styles.sectionLabel}>GALERIA DE MÍDIA</Text>
+            <Text style={styles.galleryCount}>{media.length}/20</Text>
+          </View>
+          {isOwner ? (
+            <View style={styles.galleryActions}>
+              <Pressable
+                testID="add-photo-btn"
+                style={[styles.mediaBtn, { borderColor: accent }, uploadProgress !== null && { opacity: 0.5 }]}
+                onPress={() => pickAndUpload("image")}
+                disabled={uploadProgress !== null}
+              >
+                <Ionicons name="image" size={16} color={accent} />
+                <Text style={[styles.mediaBtnText, { color: accent }]}>Adicionar Foto</Text>
+              </Pressable>
+              <Pressable
+                testID="add-video-btn"
+                style={[styles.mediaBtn, { borderColor: accent }, uploadProgress !== null && { opacity: 0.5 }]}
+                onPress={() => pickAndUpload("video")}
+                disabled={uploadProgress !== null}
+              >
+                <Ionicons name="videocam" size={16} color={accent} />
+                <Text style={[styles.mediaBtnText, { color: accent }]}>Adicionar Vídeo</Text>
+              </Pressable>
+            </View>
           ) : null}
+          {mediaMsg ? (
+            <Text style={styles.mediaMsg} testID="media-msg">
+              {mediaMsg}
+            </Text>
+          ) : null}
+          {media.length === 0 && uploadProgress === null ? (
+            <Text style={styles.empty}>Nenhuma mídia ainda</Text>
+          ) : (
+            <FlatList
+              horizontal
+              data={media}
+              keyExtractor={(m) => m.media_id}
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ gap: spacing.sm }}
+              ListHeaderComponent={
+                uploadProgress !== null ? (
+                  <View style={{ marginRight: spacing.sm }}>
+                    <LoadingThumb progress={uploadProgress} />
+                  </View>
+                ) : null
+              }
+              renderItem={({ item, index }) => (
+                <MediaThumb
+                  media={item}
+                  onPress={() => setViewerIdx(index)}
+                  onDelete={() => removeMedia(item)}
+                  editable={!!isOwner}
+                />
+              )}
+            />
+          )}
 
           {/* Marketplace — non-owner sees buy button if listed */}
           {!isOwner && pixel.listed_price && pixel.owner_id ? (
@@ -408,7 +492,7 @@ export default function PixelDetail() {
                 keyboardType="url"
               />
 
-              <Text style={styles.subLabel}>Page theme color</Text>
+              <Text style={styles.subLabel}>Cor do tema da página</Text>
               <View style={styles.themeRow}>
                 {THEMES.map((t) => (
                   <Pressable
@@ -422,26 +506,6 @@ export default function PixelDetail() {
                     ]}
                   />
                 ))}
-              </View>
-
-              <Text style={styles.subLabel}>Add image to gallery</Text>
-              <View style={{ flexDirection: "row", gap: spacing.sm }}>
-                <TextInput
-                  testID="gallery-input"
-                  style={[styles.input, { flex: 1 }]}
-                  value={galleryInput}
-                  onChangeText={setGalleryInput}
-                  placeholder="Image URL"
-                  placeholderTextColor={colors.onSurfaceTertiary}
-                  autoCapitalize="none"
-                />
-                <Pressable
-                  testID="gallery-add"
-                  style={[styles.addBtn, { backgroundColor: accent }]}
-                  onPress={addToGallery}
-                >
-                  <Ionicons name="add" size={20} color={colors.onBrand} />
-                </Pressable>
               </View>
 
               {err ? <Text style={styles.error}>{err}</Text> : null}
@@ -495,6 +559,15 @@ export default function PixelDetail() {
           {err && !editing ? <Text style={styles.error}>{err}</Text> : null}
         </View>
       </ScrollView>
+
+      {viewerIdx !== null ? (
+        <GalleryViewer
+          visible
+          media={media}
+          startIndex={viewerIdx}
+          onClose={() => setViewerIdx(null)}
+        />
+      ) : null}
     </KeyboardAvoidingView>
   );
 }
@@ -601,32 +674,27 @@ const styles = StyleSheet.create({
     borderColor: "transparent",
   },
   themeChipActive: { borderColor: colors.onSurface },
-  addBtn: {
-    width: 48,
-    height: 48,
-    borderRadius: radius.md,
+  galleryHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: spacing.sm,
+  },
+  galleryCount: { color: colors.onSurfaceTertiary, fontSize: 11, letterSpacing: 1 },
+  galleryActions: { flexDirection: "row", gap: spacing.sm },
+  mediaBtn: {
+    flex: 1,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
+    gap: spacing.xs,
+    borderWidth: 1,
+    paddingVertical: spacing.md,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surfaceSecondary,
   },
-  galleryItem: {
-    width: 120,
-    height: 90,
-    borderRadius: radius.md,
-    overflow: "hidden",
-    backgroundColor: colors.surfaceTertiary,
-  },
-  galleryImg: { width: "100%", height: "100%" },
-  galleryRemove: {
-    position: "absolute",
-    top: 4,
-    right: 4,
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(0,0,0,0.75)",
-  },
+  mediaBtnText: { fontSize: 13, fontWeight: "600", letterSpacing: 0.5 },
+  mediaMsg: { color: colors.onSurfaceSecondary, fontSize: 12, fontStyle: "italic" },
   empty: { color: colors.onSurfaceTertiary, fontSize: 12, fontStyle: "italic" },
   txRow: {
     flexDirection: "row",

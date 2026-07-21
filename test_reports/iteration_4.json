@@ -1,0 +1,41 @@
+{
+  "summary": "Backend-only verification of the new PixelLand Media Gallery feature (Cloudinary). Added 25 pytest cases in /app/backend/tests/test_pixelland_media.py — 25/25 PASS against the public backend. All 12 requested scenarios verified: owner PNG happy path (200 + url/thumbnail_url on res.cloudinary.com/cynpx6ck, CDN GET 200), owner MP4 happy path (kind=video + thumbnail_url contains /video/upload/so_0/ .jpg and is reachable), 401 no-token, 403 non-owner upload, 403 non-owner delete, 415 application/pdf, 413 image >10MB, 404 pixel-not-found, public GET listing, DELETE owner removes from DB + Cloudinary CDN 404 after invalidate, admin can upload/delete on any pixel, 20-item quota (21st → 409 with 'Limite atingido (20 arquivos)'), Cloudinary creds sourced from backend/.env (no hardcoded secret), and PixelOut still exposes gallery + number. Full backend suite: 90/92 pass; the 2 remaining failures are pre-existing test-isolation bugs in test_pixelland_api.py already documented in iteration_2/iteration_3 (unrelated to media).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "test_pixelland_api.py (pre-existing, NOT the media feature)", "issue": "test_admin_patch_pixel_price_and_clear_owner mutates pixel 0_0 price to 77 and never restores; on re-runs test_list_pixels_count_and_shape + test_get_single_pixel fail. Same finding as iteration_2/3 — not a product bug."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_pixelland_media.py",
+    "/app/test_reports/pytest/pytest_results_iter4.xml"
+  ],
+  "action_items": [
+    "(optional, unrelated) Restore pixel 0_0 original price in the iter1 admin-patch test teardown so re-runs stay green."
+  ],
+  "critical_code_review_comments": [
+    "server.py loads CLOUDINARY_CLOUD_NAME / API_KEY / API_SECRET via os.environ[...] with no fallbacks; the api_secret does NOT appear literally anywhere in source. cloudinary.config(..., secure=True) so all returned URLs are HTTPS on res.cloudinary.com/cynpx6ck.",
+    "upload_media enforces the order correctly: 404 (pixel), 403 (non-owner/non-admin), 409 (quota — counted via count_documents before Cloudinary), 415 (mime whitelist), 413 (streamed while reading chunks BEFORE any Cloudinary call — no wasted upload bandwidth).",
+    "Video branch uses cloudinary.uploader.upload_large with chunk_size=6MB and builds thumbnail_url as https://res.cloudinary.com/{CLOUD}/video/upload/so_0/{public_id}.jpg — verified reachable and returns image/*.",
+    "delete_media calls cloudinary.uploader.destroy(public_id, resource_type=..., invalidate=True) — verified the CDN URL 404s within ~2–4s after DELETE. It also $pulls the URL from pixel.gallery (backwards-compat with legacy field). Failure to destroy is soft-logged and the DB row is still removed — reasonable.",
+    "pixel_media collection has media_id unique index and pixel_id index (created in startup). count_documents on pixel_id is fast.",
+    "Non-blocking observation: upload_media reads the whole file into a tempfile BEFORE the Cloudinary call. For a 200MB video this holds a large tmp file — acceptable but could stream directly with upload_large's file arg + async wrapping in the future.",
+    "Non-blocking observation: soft-continue on Cloudinary destroy failure means DB and CDN could drift if Cloudinary is down; consider a background reconciliation job.",
+    "Non-blocking observation: no MIME sniffing — trusts client content_type header. A malicious client could label an executable as image/png; Cloudinary will reject non-images server-side but it wastes a round trip. Low risk given owner-only gate."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_pixelland_media.py (new — 25 tests)"
+  ],
+  "success_rate": {"backend": "100% (25/25 iter4 media tests); overall 90/92 — 2 pre-existing iter1 test-isolation failures unrelated to media", "frontend": "not tested (backend-only run)"},
+  "seed_data_creation": "Direct-mongo insert (via motor) of two throwaway non-admin users with active sessions (TEST_MediaOwner + TEST_NonOwner) and the owner receives ownership of one fresh unowned pixel for the entire module. Full teardown releases the pixel back to unowned, wipes gallery/theme/cover/title/description/external_link, deletes pixel_media rows created during tests, and removes both test users + sessions. TestRegression.test_buy_then_list_then_unlist_flow also creates a self-contained TEST buyer, uses one fresh unowned pixel, then teardowns the same way. The 20-quota test uses fake pixel_media rows (med_TESTQUOTA_*) inserted directly to avoid 20 real Cloudinary uploads; they are deleted at the end of the test.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run: cd /app && set -a && source backend/.env && set +a && python -m pytest backend/tests/test_pixelland_media.py -v (needs Pillow — installed — and imageio-ffmpeg — installed via pip during iter4). Uses MONGO_URL+DB_NAME from backend/.env. Suite is fully self-cleaning. Base URL hardcoded to https://pixelland-mvp.preview.emergentagent.com (public preview) since that is where the reviewed backend runs; adjust BASE_URL constant if the host changes. The 25 tests cover every scenario in the review request.",
+  "rca_of_issue": "N/A — the media gallery feature works end-to-end as specified. The original 'black-block' bug (pasted-URL hotlink protection) is properly fixed because uploads now go through Cloudinary and returned url/thumbnail_url are cynpx6ck-hosted images that fetch with HTTP 200 and correct image/* content-type from the CDN (verified in test_uploaded_url_is_reachable_200 and test_video_poster_thumbnail_reachable)."
+}
