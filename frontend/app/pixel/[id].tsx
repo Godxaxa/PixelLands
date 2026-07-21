@@ -231,7 +231,12 @@ export default function PixelDetail() {
             <Pressable
               testID="external-link-btn"
               style={[styles.linkBox, { borderColor: accent }]}
-              onPress={() => Linking.openURL(pixel.external_link!).catch(() => {})}
+              onPress={() => {
+                const u = String(pixel.external_link || "").trim();
+                if (/^https?:\/\//i.test(u)) {
+                  Linking.openURL(u).catch(() => {});
+                }
+              }}
             >
               <Ionicons name="link" size={16} color={accent} />
               <Text style={[styles.linkText, { color: accent }]} numberOfLines={1}>

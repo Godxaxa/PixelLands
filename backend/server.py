@@ -23,7 +23,7 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, APIRouter, HTTPException, Header, Depends
 from motor.motor_asyncio import AsyncIOMotorClient
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.cors import CORSMiddleware
 
 
@@ -45,8 +45,8 @@ DEFAULT_COVER = (
     "&ixlib=rb-4.1.0&q=85"
 )
 
-ADMIN_EMAIL = "admin@pixelland.com"
-ADMIN_PASSWORD = "Apollo2122@×+>×>adm00140"
+ADMIN_EMAIL = os.environ["ADMIN_EMAIL"].lower().strip()
+ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
 
 EMERGENT_SESSION_DATA_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
 
@@ -101,6 +101,21 @@ class PixelOut(BaseModel):
     listed_price: Optional[int] = None
 
 
+def _validate_http_url(v: Optional[str]) -> Optional[str]:
+    """Allow empty string (clears link) or http/https URL only."""
+    if v is None:
+        return v
+    s = v.strip()
+    if s == "":
+        return s
+    low = s.lower()
+    if not (low.startswith("http://") or low.startswith("https://")):
+        raise ValueError("URL must start with http:// or https://")
+    if len(s) > 2048:
+        raise ValueError("URL too long")
+    return s
+
+
 class PixelUpdateIn(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
@@ -108,6 +123,40 @@ class PixelUpdateIn(BaseModel):
     gallery: Optional[List[str]] = None
     external_link: Optional[str] = None
     theme_color: Optional[str] = None
+
+    @field_validator("cover_image", "external_link")
+    @classmethod
+    def _v_url(cls, v):
+        return _validate_http_url(v)
+
+    @field_validator("gallery")
+    @classmethod
+    def _v_gallery(cls, v):
+        if v is None:
+            return v
+        if len(v) > 30:
+            raise ValueError("Gallery limited to 30 images")
+        out = []
+        for item in v:
+            validated = _validate_http_url(item)
+            if not validated:
+                raise ValueError("Gallery URL must be http(s)")
+            out.append(validated)
+        return out
+
+    @field_validator("theme_color")
+    @classmethod
+    def _v_theme(cls, v):
+        if v is None:
+            return v
+        s = v.strip()
+        if s == "":
+            return s
+        # Simple hex color check
+        import re
+        if not re.fullmatch(r"#[0-9A-Fa-f]{6}", s):
+            raise ValueError("theme_color must be a #RRGGBB hex value")
+        return s
 
 
 class AdminPixelUpdateIn(BaseModel):
@@ -261,15 +310,19 @@ async def seed_pixels():
 
 
 async def seed_admin():
+    """Seed admin ONCE if missing. Never overwrite existing hash so the
+    password can be rotated in the secret store without the app restoring it.
+    """
     existing = await db.users.find_one({"email": ADMIN_EMAIL}, {"_id": 0})
-    hashed = bcrypt.hashpw(ADMIN_PASSWORD.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
     if existing:
-        # always re-sync the admin password (idempotent and aligns with current ADMIN_PASSWORD)
-        await db.users.update_one(
-            {"email": ADMIN_EMAIL},
-            {"$set": {"password_hash": hashed, "is_admin": True, "name": existing.get("name") or "Admin"}},
-        )
+        # Ensure admin flag stays true, but never touch the password hash.
+        if not existing.get("is_admin"):
+            await db.users.update_one(
+                {"email": ADMIN_EMAIL},
+                {"$set": {"is_admin": True}},
+            )
         return
+    hashed = bcrypt.hashpw(ADMIN_PASSWORD.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
     await db.users.insert_one({
         "user_id": f"user_{uuid.uuid4().hex[:12]}",
         "email": ADMIN_EMAIL,
@@ -437,8 +490,14 @@ async def buy_pixel(pixel_id: str, user: dict = Depends(get_current_user)):
     if p.get("owner_id"):
         raise HTTPException(status_code=409, detail="Pixel already owned")
     price = int(p["price"])
-    if user.get("coins", 0) < price:
+    # STEP 1: atomically deduct coins ONLY if balance is sufficient.
+    coin_res = await db.users.update_one(
+        {"user_id": user["user_id"], "coins": {"$gte": price}},
+        {"$inc": {"coins": -price, "pixels_owned": 1}},
+    )
+    if coin_res.matched_count == 0:
         raise HTTPException(status_code=402, detail="Not enough Pixel Coins")
+    # STEP 2: atomically claim the pixel. If it was taken between step 1 and 2, refund.
     now = now_utc()
     result = await db.pixels.update_one(
         {"pixel_id": pixel_id, "owner_id": None},
@@ -451,12 +510,12 @@ async def buy_pixel(pixel_id: str, user: dict = Depends(get_current_user)):
         },
     )
     if result.matched_count == 0:
-        # Lost the race - someone else just bought it
+        # Refund - someone else claimed it first
+        await db.users.update_one(
+            {"user_id": user["user_id"]},
+            {"$inc": {"coins": price, "pixels_owned": -1}},
+        )
         raise HTTPException(status_code=409, detail="Pixel already owned")
-    await db.users.update_one(
-        {"user_id": user["user_id"]},
-        {"$inc": {"coins": -price, "pixels_owned": 1}},
-    )
     await _record_transaction(
         pixel_id=pixel_id,
         kind="primary",
@@ -571,12 +630,17 @@ async def buy_resale(pixel_id: str, user: dict = Depends(get_current_user)):
     if seller_id == user["user_id"]:
         raise HTTPException(status_code=409, detail="Cannot buy your own pixel")
     price = int(listed_price)
-    if user.get("coins", 0) < price:
-        raise HTTPException(status_code=402, detail="Not enough Pixel Coins")
     fee = (price * MARKET_FEE_PCT) // 100
     seller_proceeds = price - fee
     now = now_utc()
-    # Conditional swap: only if listed_price and owner are still the same
+    # STEP 1: atomically deduct buyer coins ONLY if they have enough.
+    buyer_res = await db.users.update_one(
+        {"user_id": user["user_id"], "coins": {"$gte": price}},
+        {"$inc": {"coins": -price, "pixels_owned": 1}},
+    )
+    if buyer_res.matched_count == 0:
+        raise HTTPException(status_code=402, detail="Not enough Pixel Coins")
+    # STEP 2: atomic conditional swap on the listing
     result = await db.pixels.update_one(
         {"pixel_id": pixel_id, "owner_id": seller_id, "listed_price": listed_price},
         {
@@ -589,12 +653,13 @@ async def buy_resale(pixel_id: str, user: dict = Depends(get_current_user)):
         },
     )
     if result.matched_count == 0:
+        # Refund the buyer - the listing changed
+        await db.users.update_one(
+            {"user_id": user["user_id"]},
+            {"$inc": {"coins": price, "pixels_owned": -1}},
+        )
         raise HTTPException(status_code=409, detail="Listing changed, please retry")
-    # Update balances
-    await db.users.update_one(
-        {"user_id": user["user_id"]},
-        {"$inc": {"coins": -price, "pixels_owned": 1}},
-    )
+    # Credit the seller
     await db.users.update_one(
         {"user_id": seller_id},
         {"$inc": {"coins": seller_proceeds, "pixels_owned": -1}},

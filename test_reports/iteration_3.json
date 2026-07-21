@@ -1,0 +1,38 @@
+{
+  "summary": "Backend-only security regression for PixelLand: verified all 3 security findings (SEC-001 admin creds from env & idempotent seed, SEC-002 buy_pixel/buy_resale overspend protection under concurrency, SEC-003 PATCH /api/pixels URL/theme_color/gallery validation). Added 32 pytest cases in /app/backend/tests/test_pixelland_security.py — 32/32 PASS against the public backend. Overall suite: 65/67 pass (the 2 failures are pre-existing iter1 test-isolation bugs on test_pixelland_api.py — unrelated to security fixes, already flagged in iteration_2.json).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "test_pixelland_api.py (pre-existing)", "issue": "Iter1 test_admin_patch_pixel_price_and_clear_owner mutates pixel 0_0 price to 77 and never restores; causes test_list_pixels_count_and_shape + test_get_single_pixel to fail on subsequent runs. Not a product bug."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_pixelland_security.py",
+    "/app/test_reports/pytest/pytest_results_iter3.xml"
+  ],
+  "action_items": [
+    "(optional) Restore pixel 0_0's original price in iter1 admin-patch test teardown so re-runs stay green (unrelated to security)."
+  ],
+  "critical_code_review_comments": [
+    "SEC-001 verified: server.py reads ADMIN_EMAIL/ADMIN_PASSWORD via os.environ, no 'Apollo2122' literal in source, seed_admin early-returns for existing admin without touching password_hash (only re-enforces is_admin=True).",
+    "SEC-002 verified: buy_pixel and buy_resale use conditional atomic $inc {coins:{$gte:price}}; if pixel/listing swap fails, coins are refunded. Under 20 concurrent buys against a 30-coin user with pixels priced 20+, buyer coins never went negative and coins + total_spent == starting balance in every run.",
+    "SEC-003 verified: PixelUpdateIn field_validators reject non-http(s) URLs on external_link, cover_image, and every gallery item; theme_color must match ^#[0-9A-Fa-f]{6}$; gallery capped at 30. Empty string external_link still allowed (clears the field). Returned status is 422 (Pydantic validation) which satisfies the 'reject with 422 or 400' spec.",
+    "Non-blocking: buy_resale still splits the swap into (a) buyer $inc, (b) conditional pixel update, (c) seller $inc credit — these are not wrapped in a Mongo transaction. Race safety is preserved because step (b) is atomic on the composite {owner_id, listed_price} key and step (a) is refunded on failure; however a crash between (b) and (c) could still under-credit the seller. Consider a Mongo multi-doc transaction for full atomicity.",
+    "seed_admin does update {is_admin: True} if the record exists but was flipped false — harmless and expected; still does not touch password_hash."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_pixelland_security.py (new)"
+  ],
+  "success_rate": {"backend": "100% (32/32 iter3 security tests); overall 65/67 — 2 pre-existing iter1 test-isolation failures unrelated to security", "frontend": "not tested"},
+  "seed_data_creation": "Direct-mongo insert of 3 non-admin test users (TEST_SecBuyer with 30 coins for buy_pixel concurrency; TEST_Seller + TEST_ResBuyer for resale concurrency) with matching user_sessions rows. All teardowns release owned pixels back to unowned and delete the test users + sessions.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run: cd /app && python -m pytest backend/tests/test_pixelland_security.py -v. Security suite is self-contained and self-cleaning. Uses MONGO_URL+DB_NAME from backend/.env (mongodb://localhost:27017 / test_database). SEC-001 idempotency is verified by (a) source inspection ensuring no password_hash overwrite in the existing-admin branch and (b) DB read of the bcrypt hash. If you need to truly prove idempotency, you can change ADMIN_PASSWORD in backend/.env, `sudo supervisorctl restart backend`, and verify old-password admin-login still works (main agent domain, not required for functional verification).",
+  "rca_of_issue": "N/A — no security bugs found; all three findings correctly mitigated."
+}
