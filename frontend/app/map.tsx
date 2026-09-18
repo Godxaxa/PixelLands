@@ -30,6 +30,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api, Pixel } from "@/src/api/client";
 import { useAuth } from "@/src/context/AuthContext";
 import { StarField } from "@/src/components/StarField";
+import { CoverView } from "@/src/components/Cover";
 import { colors, radius, spacing } from "@/src/theme";
 
 const GRID = 20;
@@ -353,11 +354,7 @@ export default function MapScreen() {
           <View style={[styles.sheet, { paddingBottom: insets.bottom + spacing.lg }]}>
             <View style={styles.sheetHandle} />
             <ScrollView showsVerticalScrollIndicator={false}>
-              <Image
-                source={{ uri: selected.cover_image }}
-                style={styles.sheetCover}
-                contentFit="cover"
-              />
+              <CoverView pixel={selected} style={styles.sheetCover} />
               <View style={{ padding: spacing.lg, gap: spacing.sm }}>
                 <Text style={[styles.sheetCoord, { color: colors.gold }]}>
                   UNIVERSO #{selected.number}
@@ -485,7 +482,6 @@ function WizardModal({
   onSaved: (p: Pixel) => void;
 }) {
   const [name, setName] = useState(`Universo #${pixel.number}`);
-  const [cover, setCover] = useState(pixel.cover_image || "");
   const [description, setDescription] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -496,7 +492,6 @@ function WizardModal({
       const updated = await api.updatePixel(pixel.pixel_id, {
         name: name.trim() || `Universo #${pixel.number}`,
         description,
-        cover_image: cover,
       });
       onSaved(updated);
     } catch (e: any) {
@@ -518,7 +513,7 @@ function WizardModal({
           <ScrollView contentContainerStyle={{ gap: spacing.md, paddingVertical: spacing.md }}>
             <Text style={styles.wizGold}>UNIVERSO #{pixel.number}</Text>
             <Text style={styles.wizTitle}>Personalize seu universo</Text>
-            <Text style={styles.wizSub}>Dê uma identidade ao novo território. Você pode editar depois.</Text>
+            <Text style={styles.wizSub}>Dê uma identidade ao novo território. Você pode editar depois — inclusive escolher capa em foto ou vídeo na Galeria de Mídia.</Text>
 
             <Text style={styles.wizLabel}>Nome do Universo</Text>
             <TextInput
@@ -528,17 +523,6 @@ function WizardModal({
               onChangeText={setName}
               placeholder="Ex.: Nebulosa Aurora"
               placeholderTextColor={colors.onSurfaceTertiary}
-            />
-
-            <Text style={styles.wizLabel}>Foto de capa (URL)</Text>
-            <TextInput
-              testID="wiz-cover"
-              style={styles.wizInput}
-              value={cover}
-              onChangeText={setCover}
-              placeholder="https://..."
-              placeholderTextColor={colors.onSurfaceTertiary}
-              autoCapitalize="none"
             />
 
             <Text style={styles.wizLabel}>Descrição</Text>

@@ -81,6 +81,14 @@ export default function ProfileScreen() {
             Entrou em {new Date(user.joined_at).toLocaleDateString("pt-BR")}
           </Text>
         ) : null}
+        <Pressable
+          testID="buy-coins-btn"
+          style={styles.buyCoinsBtn}
+          onPress={() => router.push("/buy-coins")}
+        >
+          <Ionicons name="diamond" size={16} color={colors.onBrand} />
+          <Text style={styles.buyCoinsText}>Comprar Pixel Coins</Text>
+        </Pressable>
       </View>
 
       <Text style={styles.sectionLabel}>SEUS UNIVERSOS</Text>
@@ -165,6 +173,19 @@ const styles = StyleSheet.create({
   name: { color: colors.onSurface, fontSize: 22, fontWeight: "700" },
   email: { color: colors.onSurfaceSecondary, fontSize: 13 },
   joined: { color: colors.gold, fontSize: 12, marginTop: spacing.md, letterSpacing: 1 },
+  buyCoinsBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.sm,
+    backgroundColor: colors.gold,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.xl,
+    borderRadius: radius.pill,
+    marginTop: spacing.lg,
+    alignSelf: "stretch",
+  },
+  buyCoinsText: { color: colors.onBrand, fontWeight: "700", letterSpacing: 1 },
   stats: { flexDirection: "row", gap: spacing.lg, marginTop: spacing.lg },
   statBox: {
     flex: 1,

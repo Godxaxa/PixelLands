@@ -12,7 +12,6 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -22,6 +21,7 @@ import * as ImagePicker from "expo-image-picker";
 import { api, Media, Pixel, Transaction, uploadMedia } from "@/src/api/client";
 import { useAuth } from "@/src/context/AuthContext";
 import { GalleryViewer, LoadingThumb, MediaThumb } from "@/src/components/Gallery";
+import { CoverPicker, CoverView } from "@/src/components/Cover";
 import { colors, radius, spacing } from "@/src/theme";
 
 const THEMES = ["#00E5FF", "#FF6B6B", "#FFD93D", "#6BCB77", "#A66CFF", "#FF9F1C"];
@@ -39,7 +39,6 @@ export default function PixelDetail() {
   // editable fields
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [cover, setCover] = useState("");
   const [externalLink, setExternalLink] = useState("");
   const [themeColor, setThemeColor] = useState(colors.brand);
 
@@ -48,6 +47,10 @@ export default function PixelDetail() {
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [viewerIdx, setViewerIdx] = useState<number | null>(null);
   const [mediaMsg, setMediaMsg] = useState<string | null>(null);
+  const [coverPickerOpen, setCoverPickerOpen] = useState(false);
+  const [aiBusy, setAiBusy] = useState<"desc" | "cover" | null>(null);
+  const [aiHint, setAiHint] = useState("");
+  const [aiCoverPrompt, setAiCoverPrompt] = useState("");
 
   // marketplace
   const [listPriceInput, setListPriceInput] = useState("");
@@ -68,7 +71,6 @@ export default function PixelDetail() {
       setPixel(p);
       setName(p.name);
       setDescription(p.description || "");
-      setCover(p.cover_image || "");
       setExternalLink(p.external_link || "");
       setThemeColor(p.theme_color || colors.brand);
       setListPriceInput(p.listed_price ? String(p.listed_price) : String(p.price));
@@ -94,7 +96,6 @@ export default function PixelDetail() {
       const updated = await api.updatePixel(pixel.pixel_id, {
         name,
         description,
-        cover_image: cover,
         external_link: externalLink,
         theme_color: themeColor,
       });
@@ -104,6 +105,55 @@ export default function PixelDetail() {
       setErr(e?.message || "Save failed");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const onPickCover = async (media_id: string | null) => {
+    if (!pixel) return;
+    try {
+      const updated = await api.updatePixel(pixel.pixel_id, {
+        cover_media_id: media_id === null ? "" : media_id,
+      });
+      setPixel(updated);
+      setCoverPickerOpen(false);
+    } catch (e: any) {
+      setMediaMsg(e?.message || "Falha ao trocar capa");
+    }
+  };
+
+  const generateDescription = async () => {
+    if (!pixel) return;
+    try {
+      setAiBusy("desc");
+      const r = await api.aiPixelDescription(pixel.pixel_id, aiHint, name);
+      setDescription(r.description);
+      Haptics.selectionAsync().catch(() => {});
+    } catch (e: any) {
+      setErr(e?.message || "Falha na IA");
+    } finally {
+      setAiBusy(null);
+    }
+  };
+
+  const generateCover = async () => {
+    if (!pixel) return;
+    if (!aiCoverPrompt.trim()) return;
+    try {
+      setAiBusy("cover");
+      setMediaMsg(null);
+      const updated = await api.aiCover(pixel.pixel_id, aiCoverPrompt.trim());
+      setPixel(updated);
+      const m = await api.listMedia(pixel.pixel_id);
+      setMedia(m);
+      setAiCoverPrompt("");
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      setMediaMsg("Capa gerada por IA ✨");
+      setTimeout(() => setMediaMsg(null), 3000);
+    } catch (e: any) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+      setMediaMsg(e?.message || "Falha ao gerar capa");
+    } finally {
+      setAiBusy(null);
     }
   };
 
@@ -234,7 +284,7 @@ export default function PixelDetail() {
     >
       <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + spacing.xl }}>
         <View style={styles.coverWrap}>
-          <Image source={{ uri: pixel.cover_image }} style={styles.cover} contentFit="cover" />
+          <CoverView pixel={pixel} style={styles.cover} />
           <View style={[styles.coverScrim, { backgroundColor: `${accent}33` }]} />
           <View style={styles.coverScrimDark} />
           <Pressable
@@ -245,13 +295,23 @@ export default function PixelDetail() {
             <Ionicons name="chevron-back" size={20} color={colors.onSurface} />
           </Pressable>
           {isOwner ? (
-            <Pressable
-              testID="edit-btn"
-              style={[styles.iconBtn, { top: insets.top + spacing.sm, right: spacing.lg }]}
-              onPress={() => setEditing((v) => !v)}
-            >
-              <Ionicons name={editing ? "close" : "pencil"} size={18} color={colors.onSurface} />
-            </Pressable>
+            <>
+              <Pressable
+                testID="edit-btn"
+                style={[styles.iconBtn, { top: insets.top + spacing.sm, right: spacing.lg }]}
+                onPress={() => setEditing((v) => !v)}
+              >
+                <Ionicons name={editing ? "close" : "pencil"} size={18} color={colors.onSurface} />
+              </Pressable>
+              <Pressable
+                testID="change-cover-btn"
+                style={[styles.coverEditBtn, { top: insets.top + spacing.sm + 46, right: spacing.lg }]}
+                onPress={() => setCoverPickerOpen(true)}
+              >
+                <Ionicons name="images" size={14} color={colors.onSurface} />
+                <Text style={styles.coverEditText}>Trocar capa</Text>
+              </Pressable>
+            </>
           ) : null}
           <View style={styles.coverInfo}>
             <Text style={[styles.coord, { color: colors.gold }]} testID="pixel-coord">
@@ -460,7 +520,7 @@ export default function PixelDetail() {
                 style={styles.input}
                 value={name}
                 onChangeText={setName}
-                placeholder="Land name"
+                placeholder="Nome do universo"
                 placeholderTextColor={colors.onSurfaceTertiary}
               />
               <TextInput
@@ -468,25 +528,68 @@ export default function PixelDetail() {
                 style={[styles.input, { minHeight: 100, textAlignVertical: "top" }]}
                 value={description}
                 onChangeText={setDescription}
-                placeholder="Describe your universe"
+                placeholder="Descreva seu universo"
                 placeholderTextColor={colors.onSurfaceTertiary}
                 multiline
               />
-              <TextInput
-                testID="edit-cover"
-                style={styles.input}
-                value={cover}
-                onChangeText={setCover}
-                placeholder="Cover image URL"
-                placeholderTextColor={colors.onSurfaceTertiary}
-                autoCapitalize="none"
-              />
+              <View style={styles.aiRow}>
+                <TextInput
+                  testID="ai-hint-input"
+                  style={[styles.input, { flex: 1 }]}
+                  value={aiHint}
+                  onChangeText={setAiHint}
+                  placeholder="Dica de estilo (opcional)"
+                  placeholderTextColor={colors.onSurfaceTertiary}
+                />
+                <Pressable
+                  testID="ai-desc-btn"
+                  style={[styles.aiBtn, aiBusy === "desc" && { opacity: 0.6 }]}
+                  onPress={generateDescription}
+                  disabled={aiBusy !== null}
+                >
+                  {aiBusy === "desc" ? (
+                    <ActivityIndicator color={colors.onBrand} />
+                  ) : (
+                    <>
+                      <Ionicons name="sparkles" size={14} color={colors.onBrand} />
+                      <Text style={styles.aiBtnText}>IA</Text>
+                    </>
+                  )}
+                </Pressable>
+              </View>
+
+              <Text style={styles.subLabel}>Gerar capa com IA</Text>
+              <View style={styles.aiRow}>
+                <TextInput
+                  testID="ai-cover-input"
+                  style={[styles.input, { flex: 1 }]}
+                  value={aiCoverPrompt}
+                  onChangeText={setAiCoverPrompt}
+                  placeholder="Ex.: nebulosa violeta ao amanhecer"
+                  placeholderTextColor={colors.onSurfaceTertiary}
+                />
+                <Pressable
+                  testID="ai-cover-btn"
+                  style={[styles.aiBtn, aiBusy === "cover" && { opacity: 0.6 }]}
+                  onPress={generateCover}
+                  disabled={aiBusy !== null || !aiCoverPrompt.trim()}
+                >
+                  {aiBusy === "cover" ? (
+                    <ActivityIndicator color={colors.onBrand} />
+                  ) : (
+                    <>
+                      <Ionicons name="sparkles" size={14} color={colors.onBrand} />
+                      <Text style={styles.aiBtnText}>Gerar</Text>
+                    </>
+                  )}
+                </Pressable>
+              </View>
               <TextInput
                 testID="edit-external-link"
                 style={styles.input}
                 value={externalLink}
                 onChangeText={setExternalLink}
-                placeholder="External link (https://...)"
+                placeholder="Link externo (https://...)"
                 placeholderTextColor={colors.onSurfaceTertiary}
                 autoCapitalize="none"
                 keyboardType="url"
@@ -568,6 +671,14 @@ export default function PixelDetail() {
           onClose={() => setViewerIdx(null)}
         />
       ) : null}
+
+      <CoverPicker
+        visible={coverPickerOpen}
+        media={media}
+        selectedId={pixel.cover_media_id}
+        onSelect={onPickCover}
+        onClose={() => setCoverPickerOpen(false)}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -592,6 +703,24 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
+  },
+  coverEditBtn: {
+    position: "absolute",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surfaceSecondary + "DD",
+    borderColor: colors.border,
+    borderWidth: 1,
+  },
+  coverEditText: {
+    color: colors.onSurface,
+    fontSize: 11,
+    letterSpacing: 0.5,
+    fontWeight: "600",
   },
   coverInfo: { position: "absolute", bottom: spacing.lg, left: spacing.lg, right: spacing.lg },
   coord: { fontSize: 12, letterSpacing: 2 },
@@ -696,6 +825,19 @@ const styles = StyleSheet.create({
   mediaBtnText: { fontSize: 13, fontWeight: "600", letterSpacing: 0.5 },
   mediaMsg: { color: colors.onSurfaceSecondary, fontSize: 12, fontStyle: "italic" },
   empty: { color: colors.onSurfaceTertiary, fontSize: 12, fontStyle: "italic" },
+  aiRow: { flexDirection: "row", gap: spacing.sm, alignItems: "center" },
+  aiBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: colors.gold,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 10,
+    borderRadius: radius.pill,
+    minWidth: 64,
+    justifyContent: "center",
+  },
+  aiBtnText: { color: colors.onBrand, fontSize: 12, fontWeight: "700", letterSpacing: 1 },
   txRow: {
     flexDirection: "row",
     alignItems: "center",

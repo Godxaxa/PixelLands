@@ -25,6 +25,8 @@ import cloudinary
 import cloudinary.uploader
 import httpx
 from dotenv import load_dotenv
+from emergentintegrations.llm.chat import LlmChat, UserMessage
+from emergentintegrations.llm.openai.image_generation import OpenAIImageGeneration
 from fastapi import FastAPI, APIRouter, HTTPException, Header, Depends, UploadFile, File
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, field_validator
@@ -70,6 +72,27 @@ MAX_IMAGE_BYTES = 10 * 1024 * 1024        # 10 MB
 MAX_VIDEO_BYTES = 200 * 1024 * 1024       # 200 MB
 MAX_MEDIA_PER_PIXEL = 20
 
+# --- Emergent LLM key (universal) for AI text + image generation ---
+EMERGENT_LLM_KEY = os.environ["EMERGENT_LLM_KEY"]
+AI_TEXT_MODEL = ("openai", "gpt-5.4")
+AI_IMAGE_MODEL = "gpt-image-1"
+
+# --- PayPal (sandbox by default) ---
+PAYPAL_MODE = os.environ.get("PAYPAL_MODE", "sandbox").lower()
+PAYPAL_CLIENT_ID = os.environ["PAYPAL_CLIENT_ID"]
+PAYPAL_SECRET = os.environ["PAYPAL_SECRET"]
+PAYPAL_BASE = (
+    "https://api-m.sandbox.paypal.com"
+    if PAYPAL_MODE == "sandbox"
+    else "https://api-m.paypal.com"
+)
+
+COIN_BUNDLES = {
+    "bundle_1000": {"coins": 1000, "price_usd": "4.99", "label": "1.000 Pixel Coins"},
+    "bundle_3000": {"coins": 3500, "price_usd": "9.99", "label": "3.500 Pixel Coins (+500 bônus)"},
+    "bundle_8000": {"coins": 10000, "price_usd": "19.99", "label": "10.000 Pixel Coins (+2000 bônus)"},
+}
+
 EMERGENT_SESSION_DATA_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
 
 mongo_url = os.environ["MONGO_URL"]
@@ -114,6 +137,9 @@ class PixelOut(BaseModel):
     name: str
     description: Optional[str] = ""
     cover_image: Optional[str] = None
+    cover_media_id: Optional[str] = None
+    cover_type: str = "image"  # "image" | "video"
+    cover_video: Optional[str] = None
     owner_id: Optional[str] = None
     owner_name: Optional[str] = None
     purchased_at: Optional[str] = None
@@ -142,6 +168,7 @@ class PixelUpdateIn(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     cover_image: Optional[str] = None
+    cover_media_id: Optional[str] = None
     gallery: Optional[List[str]] = None
     external_link: Optional[str] = None
     theme_color: Optional[str] = None
@@ -230,6 +257,56 @@ class MediaOut(BaseModel):
     created_at: str
 
 
+class AiDescriptionIn(BaseModel):
+    name: Optional[str] = ""
+    hint: Optional[str] = ""
+
+
+class AiDescriptionOut(BaseModel):
+    description: str
+
+
+class AiCoverIn(BaseModel):
+    prompt: str
+
+    @field_validator("prompt")
+    @classmethod
+    def _v_prompt(cls, v):
+        s = (v or "").strip()
+        if len(s) < 3:
+            raise ValueError("Prompt is too short")
+        if len(s) > 500:
+            raise ValueError("Prompt too long (max 500 chars)")
+        return s
+
+
+class CoinBundleOut(BaseModel):
+    bundle_id: str
+    coins: int
+    price_usd: str
+    label: str
+
+
+class CreateOrderIn(BaseModel):
+    bundle_id: str
+
+
+class CreateOrderOut(BaseModel):
+    order_id: str
+    approve_url: str
+    bundle_id: str
+    coins: int
+    price_usd: str
+
+
+class CaptureOrderOut(BaseModel):
+    order_id: str
+    status: str
+    credited: bool
+    coins_added: int
+    new_balance: int
+
+
 class AdminUserUpdateIn(BaseModel):
     name: Optional[str] = None
     coins: Optional[int] = None
@@ -280,6 +357,9 @@ def _pixel_to_out(p: dict) -> PixelOut:
         name=p.get("name") or "",
         description=p.get("description") or "",
         cover_image=p.get("cover_image") or DEFAULT_COVER,
+        cover_media_id=p.get("cover_media_id"),
+        cover_type=p.get("cover_type") or "image",
+        cover_video=p.get("cover_video"),
         owner_id=p.get("owner_id"),
         owner_name=p.get("owner_name"),
         purchased_at=purchased_at,
@@ -385,6 +465,8 @@ async def ensure_indexes():
     await db.transactions.create_index("timestamp")
     await db.pixel_media.create_index("pixel_id")
     await db.pixel_media.create_index("media_id", unique=True)
+    await db.payment_orders.create_index("order_id", unique=True)
+    await db.payment_orders.create_index("user_id")
 
 
 # ---------------- App / Router ----------------
@@ -883,7 +965,345 @@ async def delete_media(pixel_id: str, media_id: str, user: dict = Depends(get_cu
         logger.exception("Cloudinary destroy failed (soft-continue)")
     await db.pixel_media.delete_one({"media_id": media_id})
     await db.pixels.update_one({"pixel_id": pixel_id}, {"$pull": {"gallery": m["url"]}})
+    # If this media was used as the cover, reset the cover to default
+    await db.pixels.update_one(
+        {"pixel_id": pixel_id, "cover_media_id": media_id},
+        {"$set": {
+            "cover_media_id": None,
+            "cover_type": "image",
+            "cover_video": None,
+            "cover_image": DEFAULT_COVER,
+        }},
+    )
     return {"ok": True}
+
+
+# -------- Leaderboard --------
+
+
+# --- AI helpers ---
+
+
+async def _generate_description(name: str, x: int, y: int, hint: str = "") -> str:
+    """One-shot creative description generation via Emergent LLM key (OpenAI)."""
+    chat = LlmChat(
+        api_key=EMERGENT_LLM_KEY,
+        session_id=f"desc_{uuid.uuid4().hex}",
+        system_message=(
+            "Você é um narrador cósmico do jogo PixelLand, um multiverso de terrenos digitais chamados 'universos'. "
+            "Escreva descrições curtas (3–4 frases, máximo 350 caracteres), em PT-BR, evocativas e poéticas, "
+            "com pitadas de ficção científica. Sempre trate o local como um 'universo' único. "
+            "Nunca inclua emojis, listas, títulos ou aspas — retorne apenas o texto corrido."
+        ),
+    ).with_model(*AI_TEXT_MODEL)
+    user_prompt = f"Universo chamado '{name or 'Sem nome'}' nas coordenadas X {x}, Y {y}."
+    if hint:
+        user_prompt += f" Estilo/tema desejado: {hint}."
+    resp = await chat.send_message(UserMessage(text=user_prompt))
+    return (resp or "").strip()
+
+
+async def _generate_image_bytes(prompt: str) -> bytes:
+    gen = OpenAIImageGeneration(api_key=EMERGENT_LLM_KEY)
+    images = await gen.generate_images(
+        prompt=prompt,
+        model=AI_IMAGE_MODEL,
+        number_of_images=1,
+    )
+    if not images:
+        raise HTTPException(status_code=502, detail="Image generation returned no result")
+    return images[0]
+
+
+# --- AI endpoints ---
+
+
+@api.post("/ai/generate-description", response_model=AiDescriptionOut)
+async def ai_generate_description(
+    payload: AiDescriptionIn, user: dict = Depends(get_current_user)
+):
+    """Free-form description generation — no pixel required, used by wizard + edit panel."""
+    x = 0
+    y = 0
+    try:
+        text = await _generate_description(payload.name or "", x, y, payload.hint or "")
+    except Exception as e:
+        logger.exception("LLM description failed")
+        raise HTTPException(status_code=502, detail=f"AI text failed: {e}")
+    return AiDescriptionOut(description=text[:500])
+
+
+@api.post("/pixels/{pixel_id}/ai/description", response_model=AiDescriptionOut)
+async def ai_pixel_description(
+    pixel_id: str, payload: AiDescriptionIn, user: dict = Depends(get_current_user)
+):
+    p = await db.pixels.find_one({"pixel_id": pixel_id}, {"_id": 0})
+    if not p:
+        raise HTTPException(status_code=404, detail="Pixel not found")
+    if p.get("owner_id") != user["user_id"] and not user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Not your pixel")
+    try:
+        text = await _generate_description(
+            payload.name or p.get("name") or "",
+            int(p["x"]),
+            int(p["y"]),
+            payload.hint or "",
+        )
+    except Exception as e:
+        logger.exception("LLM description failed")
+        raise HTTPException(status_code=502, detail=f"AI text failed: {e}")
+    return AiDescriptionOut(description=text[:500])
+
+
+@api.post("/pixels/{pixel_id}/ai/cover", response_model=PixelOut)
+async def ai_pixel_cover(
+    pixel_id: str, payload: AiCoverIn, user: dict = Depends(get_current_user)
+):
+    """Generate a cover image with OpenAI, upload to Cloudinary, save as a new
+    media item in the pixel's gallery and set it as the pixel's cover."""
+    p = await db.pixels.find_one({"pixel_id": pixel_id}, {"_id": 0})
+    if not p:
+        raise HTTPException(status_code=404, detail="Pixel not found")
+    if p.get("owner_id") != user["user_id"] and not user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Not your pixel")
+    count = await db.pixel_media.count_documents({"pixel_id": pixel_id})
+    if count >= MAX_MEDIA_PER_PIXEL:
+        raise HTTPException(status_code=409, detail=f"Limite atingido ({MAX_MEDIA_PER_PIXEL} arquivos)")
+
+    prompt = payload.prompt.strip()
+    try:
+        img_bytes = await _generate_image_bytes(prompt)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Image generation failed")
+        raise HTTPException(status_code=502, detail=f"AI image failed: {e}")
+
+    tmp_path: Optional[str] = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+            tmp.write(img_bytes)
+            tmp_path = tmp.name
+        folder = f"pixelland/pixel_{pixel_id}"
+        try:
+            result = cloudinary.uploader.upload(
+                tmp_path,
+                resource_type="image",
+                folder=folder,
+            )
+        except Exception as e:
+            logger.exception("Cloudinary upload failed for AI cover")
+            raise HTTPException(status_code=502, detail=f"Cloudinary falhou: {e}")
+
+        now = now_utc()
+        media_id = f"med_{uuid.uuid4().hex[:14]}"
+        media_doc = {
+            "media_id": media_id,
+            "pixel_id": pixel_id,
+            "kind": "image",
+            "url": result["secure_url"],
+            "thumbnail_url": result["secure_url"],
+            "public_id": result["public_id"],
+            "resource_type": "image",
+            "bytes": int(result.get("bytes") or len(img_bytes)),
+            "mime_type": "image/png",
+            "duration": None,
+            "width": result.get("width"),
+            "height": result.get("height"),
+            "uploaded_by": user["user_id"],
+            "ai_generated": True,
+            "ai_prompt": prompt,
+            "created_at": now,
+        }
+        await db.pixel_media.insert_one(media_doc)
+        # Set as cover + backfill gallery for backward compatibility
+        await db.pixels.update_one(
+            {"pixel_id": pixel_id},
+            {
+                "$set": {
+                    "cover_media_id": media_id,
+                    "cover_type": "image",
+                    "cover_video": None,
+                    "cover_image": result["secure_url"],
+                },
+                "$push": {"gallery": result["secure_url"]},
+            },
+        )
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+    updated = await db.pixels.find_one({"pixel_id": pixel_id}, {"_id": 0})
+    return _pixel_to_out(updated)
+
+
+# -------- Leaderboard (real) --------
+
+
+# --- PayPal helpers ---
+
+
+async def _paypal_access_token() -> str:
+    async with httpx.AsyncClient(timeout=15) as hc:
+        r = await hc.post(
+            f"{PAYPAL_BASE}/v1/oauth2/token",
+            data={"grant_type": "client_credentials"},
+            headers={"Accept": "application/json", "Accept-Language": "en_US"},
+            auth=(PAYPAL_CLIENT_ID, PAYPAL_SECRET),
+        )
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"PayPal auth failed: {r.text}")
+    return r.json()["access_token"]
+
+
+@api.get("/payments/bundles", response_model=List[CoinBundleOut])
+async def list_bundles():
+    return [
+        CoinBundleOut(bundle_id=k, coins=v["coins"], price_usd=v["price_usd"], label=v["label"])
+        for k, v in COIN_BUNDLES.items()
+    ]
+
+
+@api.post("/payments/create-order", response_model=CreateOrderOut)
+async def create_order(payload: CreateOrderIn, user: dict = Depends(get_current_user)):
+    bundle = COIN_BUNDLES.get(payload.bundle_id)
+    if not bundle:
+        raise HTTPException(status_code=400, detail="Invalid bundle_id")
+    token = await _paypal_access_token()
+    return_url = f"{PAYPAL_BASE.replace('api-m', 'www')}/checkoutnow"  # not actually used, we handle return via app deep link
+    body = {
+        "intent": "CAPTURE",
+        "purchase_units": [{
+            "reference_id": payload.bundle_id,
+            "description": bundle["label"],
+            "amount": {"currency_code": "USD", "value": bundle["price_usd"]},
+        }],
+        "application_context": {
+            "brand_name": "PixelLand",
+            "user_action": "PAY_NOW",
+            "return_url": "https://pixelland-mvp.preview.emergentagent.com/paypal-return",
+            "cancel_url": "https://pixelland-mvp.preview.emergentagent.com/paypal-cancel",
+        },
+    }
+    async with httpx.AsyncClient(timeout=20) as hc:
+        r = await hc.post(
+            f"{PAYPAL_BASE}/v2/checkout/orders",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+                "PayPal-Request-Id": f"pxl-{uuid.uuid4().hex}",
+            },
+            json=body,
+        )
+    if r.status_code not in (200, 201):
+        raise HTTPException(status_code=502, detail=f"PayPal order failed: {r.text}")
+    data = r.json()
+    order_id = data["id"]
+    approve = next((l["href"] for l in data.get("links", []) if l.get("rel") == "approve"), None)
+    if not approve:
+        raise HTTPException(status_code=502, detail="PayPal did not return an approval link")
+    # Persist an intent record (idempotency + audit)
+    await db.payment_orders.insert_one({
+        "order_id": order_id,
+        "user_id": user["user_id"],
+        "bundle_id": payload.bundle_id,
+        "coins": bundle["coins"],
+        "price_usd": bundle["price_usd"],
+        "status": "CREATED",
+        "credited": False,
+        "created_at": now_utc(),
+    })
+    return CreateOrderOut(
+        order_id=order_id,
+        approve_url=approve,
+        bundle_id=payload.bundle_id,
+        coins=bundle["coins"],
+        price_usd=bundle["price_usd"],
+    )
+
+
+@api.post("/payments/capture/{order_id}", response_model=CaptureOrderOut)
+async def capture_order(order_id: str, user: dict = Depends(get_current_user)):
+    record = await db.payment_orders.find_one({"order_id": order_id}, {"_id": 0})
+    if not record:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if record["user_id"] != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Order belongs to another user")
+    # Idempotent short-circuit if already credited
+    if record.get("credited"):
+        me = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "coins": 1})
+        return CaptureOrderOut(
+            order_id=order_id,
+            status=record.get("status") or "COMPLETED",
+            credited=True,
+            coins_added=0,
+            new_balance=int((me or {}).get("coins", 0)),
+        )
+    token = await _paypal_access_token()
+    async with httpx.AsyncClient(timeout=25) as hc:
+        r = await hc.post(
+            f"{PAYPAL_BASE}/v2/checkout/orders/{order_id}/capture",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+                "PayPal-Request-Id": f"cap-{order_id}",  # idempotency key at PayPal too
+            },
+        )
+    if r.status_code not in (200, 201):
+        # If PayPal says already captured, we still want to reconcile
+        await db.payment_orders.update_one({"order_id": order_id}, {"$set": {"last_error": r.text}})
+        raise HTTPException(status_code=502, detail=f"PayPal capture failed: {r.text}")
+    data = r.json()
+    status = data.get("status") or ""
+    if status != "COMPLETED":
+        await db.payment_orders.update_one({"order_id": order_id}, {"$set": {"status": status}})
+        return CaptureOrderOut(
+            order_id=order_id,
+            status=status,
+            credited=False,
+            coins_added=0,
+            new_balance=int(user.get("coins", 0)),
+        )
+    # Verify PayPal actually captured the amount we asked for — defense against
+    # a client tampering with the amount at PayPal's side.
+    try:
+        captured_amount = str(
+            data["purchase_units"][0]["payments"]["captures"][0]["amount"]["value"]
+        )
+    except (KeyError, IndexError, TypeError):
+        captured_amount = ""
+    if captured_amount and captured_amount != str(record["price_usd"]):
+        await db.payment_orders.update_one(
+            {"order_id": order_id},
+            {"$set": {
+                "status": "AMOUNT_MISMATCH",
+                "captured_amount": captured_amount,
+                "raw": data,
+            }},
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=f"Amount mismatch: got {captured_amount}, expected {record['price_usd']}",
+        )
+    # Credit coins atomically ONLY IF not credited yet
+    coins = int(record["coins"])
+    swap = await db.payment_orders.update_one(
+        {"order_id": order_id, "credited": {"$ne": True}},
+        {"$set": {"credited": True, "status": status, "captured_at": now_utc(), "raw": data}},
+    )
+    if swap.matched_count == 1:
+        await db.users.update_one({"user_id": user["user_id"]}, {"$inc": {"coins": coins}})
+    me = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "coins": 1})
+    return CaptureOrderOut(
+        order_id=order_id,
+        status=status,
+        credited=True,
+        coins_added=coins if swap.matched_count == 1 else 0,
+        new_balance=int((me or {}).get("coins", 0)),
+    )
 
 
 # -------- Leaderboard --------
@@ -920,7 +1340,31 @@ async def update_pixel(pixel_id: str, payload: PixelUpdateIn, user: dict = Depen
         raise HTTPException(status_code=404, detail="Pixel not found")
     if p.get("owner_id") != user["user_id"] and not user.get("is_admin"):
         raise HTTPException(status_code=403, detail="Not your pixel")
-    update = {k: v for k, v in payload.dict().items() if v is not None}
+    update = {k: v for k, v in payload.dict().items() if v is not None and k != "cover_media_id"}
+    # Resolve cover from media library so the URL is always a stable Cloudinary
+    # asset (never a hotlink-protected URL that renders as a black block).
+    if payload.cover_media_id is not None:
+        if payload.cover_media_id == "":
+            update["cover_media_id"] = None
+            update["cover_type"] = "image"
+            update["cover_video"] = None
+            update["cover_image"] = DEFAULT_COVER
+        else:
+            media = await db.pixel_media.find_one(
+                {"media_id": payload.cover_media_id, "pixel_id": pixel_id},
+                {"_id": 0},
+            )
+            if not media:
+                raise HTTPException(status_code=404, detail="Cover media not found for this pixel")
+            update["cover_media_id"] = payload.cover_media_id
+            if media["kind"] == "video":
+                update["cover_type"] = "video"
+                update["cover_video"] = media["url"]
+                update["cover_image"] = media.get("thumbnail_url") or media["url"]
+            else:
+                update["cover_type"] = "image"
+                update["cover_video"] = None
+                update["cover_image"] = media["url"]
     if update:
         await db.pixels.update_one({"pixel_id": pixel_id}, {"$set": update})
     updated = await db.pixels.find_one({"pixel_id": pixel_id}, {"_id": 0})

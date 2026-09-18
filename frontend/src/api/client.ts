@@ -23,6 +23,9 @@ export type Pixel = {
   name: string;
   description?: string;
   cover_image?: string;
+  cover_media_id?: string | null;
+  cover_type?: "image" | "video";
+  cover_video?: string | null;
   owner_id?: string | null;
   owner_name?: string | null;
   purchased_at?: string | null;
@@ -124,7 +127,7 @@ export const api = {
         Pixel,
         "name" | "description" | "cover_image" | "gallery" | "external_link" | "theme_color"
       >
-    >,
+    > & { cover_media_id?: string | null },
   ) =>
     request<Pixel>(`/pixels/${id}`, {
       method: "PATCH",
@@ -174,6 +177,48 @@ export const api = {
   listMedia: (pixel_id: string) => request<Media[]>(`/pixels/${pixel_id}/media`),
   deleteMedia: (pixel_id: string, media_id: string) =>
     request<{ ok: boolean }>(`/pixels/${pixel_id}/media/${media_id}`, { method: "DELETE" }),
+
+  // AI
+  aiDescription: (name: string, hint: string) =>
+    request<{ description: string }>("/ai/generate-description", {
+      method: "POST",
+      body: JSON.stringify({ name, hint }),
+    }),
+  aiPixelDescription: (pixel_id: string, hint: string, name?: string) =>
+    request<{ description: string }>(`/pixels/${pixel_id}/ai/description`, {
+      method: "POST",
+      body: JSON.stringify({ hint, name: name || "" }),
+    }),
+  aiCover: (pixel_id: string, prompt: string) =>
+    request<Pixel>(`/pixels/${pixel_id}/ai/cover`, {
+      method: "POST",
+      body: JSON.stringify({ prompt }),
+    }),
+
+  // Payments
+  listBundles: () =>
+    request<{ bundle_id: string; coins: number; price_usd: string; label: string }[]>(
+      "/payments/bundles",
+    ),
+  createOrder: (bundle_id: string) =>
+    request<{
+      order_id: string;
+      approve_url: string;
+      bundle_id: string;
+      coins: number;
+      price_usd: string;
+    }>("/payments/create-order", {
+      method: "POST",
+      body: JSON.stringify({ bundle_id }),
+    }),
+  captureOrder: (order_id: string) =>
+    request<{
+      order_id: string;
+      status: string;
+      credited: boolean;
+      coins_added: number;
+      new_balance: number;
+    }>(`/payments/capture/${order_id}`, { method: "POST" }),
 };
 
 /**

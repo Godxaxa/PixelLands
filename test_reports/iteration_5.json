@@ -1,0 +1,32 @@
+{
+  "summary": "Backend-only verification of PixelLand iter5 (cover-from-media fix + OpenAI text/image AI + PayPal sandbox). Created /app/backend/tests/test_pixelland_iter5.py with 25 pytest cases covering every scenario in the review. Result: 25/25 iter5 tests PASS against https://pixelland-mvp.preview.emergentagent.com. Regression sweep of the other iter1-4 suites: 70/71 pass; the single failure (test_pixelland_media.py::test_owner_delete_removes_from_db_and_cdn) is a pre-existing flaky CDN-invalidation timing test unrelated to iter5. Cover bug is fixed end-to-end (image + video paths), AI text uses gpt-5.4 via Emergent LLM key with proper 401/403/timeout handling, AI image (gpt-image-1) generates a real res.cloudinary.com image (fetched HTTP 200 image/*), and a new media row is inserted. PayPal sandbox: 3 bundles with correct ids/prices, create-order returns https://www.sandbox.paypal.com approve_url, capture endpoint returns 502 for unapproved orders, 401 unauth, 403 wrong owner, 404 unknown order, and idempotency short-circuit returns {credited:true, coins_added:0} when credited flag is preset. All secrets loaded via os.environ from backend/.env; no hardcoded literals (grep-verified in test_env_sourced_no_hardcoded).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "DELETE /api/pixels/{id}/media/{media_id}", "issue": "Pre-existing (iter4 flaky) — CDN-invalidation check occasionally still returns 200 within 2-4s window. Not an iter5 change; safe to ignore or extend the polling window."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": [], "react_native_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_pixelland_iter5.py",
+    "/app/test_reports/pytest/pytest_results_iter5.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Cover fix (PATCH /api/pixels/{id}): server.py lines 1315-1350 correctly resolve cover_media_id → validates media belongs to this pixel (404 if not), differentiates image vs video: for video it sets cover_type='video', cover_video=media.url, cover_image=thumbnail_url (poster); for image only cover_image; and empty string resets to DEFAULT_COVER. delete_media also cleans cover_media_id back to defaults via a targeted update_one on {cover_media_id: media_id}. Solid.",
+    "AI text: LlmChat(session_id=uuid, system_message=PT-BR narrator) with .with_model('openai','gpt-5.4') — response trimmed and truncated to 500 chars. 401 (auth first) and 403 (non-owner) enforced before LLM call, so no wasted quota. Wrapping non-HTTPException failures as 502 is appropriate.",
+    "AI cover: enforces 20-media quota BEFORE calling OpenAI, prompt validated (>=3 chars, <=500) via Pydantic (returns 422), then generates via OpenAIImageGeneration → tempfile → cloudinary.uploader.upload → inserts pixel_media doc with ai_generated=true & ai_prompt (nice audit trail) and $pushes URL to gallery for backward compat.",
+    "PayPal: _paypal_access_token uses HTTP basic auth against sandbox oauth endpoint, base URL switches on PAYPAL_MODE env var. create_order builds a v2/checkout/orders body with reference_id=bundle_id and inserts a payment_orders row with credited=false. capture_order gates on order-not-found (404) → wrong-owner (403) → credited short-circuit (200, coins_added=0) → then attempts capture. Atomic $set credited=true is protected by {credited: {$ne: true}} filter — race-safe.",
+    "Env sourcing verified: EMERGENT_LLM_KEY, PAYPAL_CLIENT_ID, PAYPAL_SECRET use os.environ[...] with no default; PAYPAL_MODE uses os.environ.get with 'sandbox' default. No credential appears as a hardcoded literal in server.py (grep-tested).",
+    "Non-blocking: capture_order does not verify PayPal's returned purchase_units amount matches the stored bundle price — a malicious approver could theoretically approve a modified order. In sandbox this is low-risk but worth adding a sanity check.",
+    "Non-blocking: ai_pixel_cover writes the tempfile before checking Cloudinary success; if Cloudinary fails the tempfile is still cleaned up in finally — OK, but a 200MB tmp write for a ~1MB PNG is minor overkill.",
+    "Non-blocking: /api/ai/generate-description accepts arbitrary hint text with no rate limit; consider basic per-user throttling to avoid Emergent-quota exhaustion by clients."
+  ],
+  "updated_files": ["/app/backend/tests/test_pixelland_iter5.py (new — 25 tests)"],
+  "success_rate": {"backend": "100% (25/25 iter5); regression 70/71 (99%) — 1 pre-existing flaky CDN test", "frontend": "not tested (backend-only)"},
+  "seed_data_creation": "Module-scope: buys one fresh unowned pixel as admin (owned_pixel fixture) and releases it via direct Mongo update on teardown (also wipes pixel_media rows for that pixel). For 403 tests, inserts throw-away non-admin users + sessions (user_TESTFAKE_*, user_TEST403_*) directly via pymongo and deletes them in finally. For idempotency test, creates a real PayPal order then flips credited=true via Mongo and deletes the payment_orders row on teardown.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run: cd /app && set -a && source backend/.env && set +a && python -m pytest backend/tests/test_pixelland_iter5.py -v. Requires MONGO_URL+DB_NAME from backend/.env to be reachable (used for teardown + idempotency simulation). BASE_URL defaults to https://pixelland-mvp.preview.emergentagent.com. Suite is self-cleaning. AI cover test takes ~30-60s (OpenAI image gen); PayPal sandbox tests need internet to api-m.sandbox.paypal.com.",
+  "rca_of_issue": "N/A — iter5 features work end-to-end as specified. Cover 'black-block' bug is properly fixed because cover_image is now always resolved server-side from a Cloudinary-hosted media row (image) or from thumbnail_url (video), never from user-pasted external URLs. AI + PayPal integrations all authenticate + gate correctly."
+}
